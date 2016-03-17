@@ -39,7 +39,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
     with logging(logfile, debug) as log:
         
-        sci_orc = hdu['sci'].data.copy()
+        sci_orc = hdu['skysub.opt'].data.copy()
         var_orc = hdu['var'].data.copy()
         badbin_orc = (hdu['bpm'].data > 0)
         wav_orc = hdu['wavelength'].data.copy()
