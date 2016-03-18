@@ -6,6 +6,7 @@ from scipy.interpolate import interp1d
 from scipy.ndimage.interpolation import shift
 from scipy.ndimage import convolve1d
 from scipy import linalg as la
+import pylab as P
 
 #import reddir
 #datadir = os.path.dirname(inspect.getfile(reddir))+"/data/"
@@ -20,6 +21,124 @@ from saltsafelog import logging
 np.set_printoptions(threshold=np.nan)
 debug = True
 
+def plot_image(img, bpm, img_shape):
+    """This function plots an image in greyscale"""
+
+    #Generate a matrix to hold image values
+    image = np.zeros([img_shape[0],img_shape[1]])
+
+    #Fill in image values with flux values at fit (i.e. good) pixels
+    image[~bpm] += img[~bpm]
+    
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    vmin=abs(image).min()
+    print "vmin is", vmin
+    P.gray()
+    
+    im = ax.imshow(image,vmin=-226,vmax=261,extent=(0,1581,0,1026))
+    P.tight_layout()
+    P.show()
+
+def plot_spatial_profile(summed_col, rows, wav1, wav2):
+    """This function plots a rouch spatial in greyscale
+    using the sum over a few wavelengths"""
+
+    
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    
+    ax.plot(rows,summed_col, 'b-')
+    ax.set_xlabel('Rows')
+    ax.set_ylabel('Max from summing $\lambda$=%.1f -%.1f at Center Row'%(wav1,wav2))
+    P.tight_layout()
+    P.show()
+
+def plot_maximum_row(summed_col, rows, wav1, wav2,window,maxval):
+    """This function plots up the rough spatial profile summed over several wavelenths
+       and shows the window the maximum is found within."""
+
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    maxtuple = np.where(summed_col==maxval)
+    print "maxtuple is",maxtuple
+    ax.plot(rows,summed_col, 'b-')
+    ax.axvspan(window[0], window[1], facecolor='0.5', alpha=0.5,label="Rows %d - %d"%(window[0],window[1]))
+    ax.text(0.1,0.8,"Max: %.2e at Row %d"%(maxval,maxtuple[0]),transform=ax.transAxes)
+    
+    ax.set_xlabel('Rows')
+    ax.set_ylabel('Max from summing $\lambda$=%.1f -%.1f at Center Row'%(wav1,wav2))
+    P.legend(loc=0,frameon=False)
+    P.tight_layout()
+    P.show()
+
+def plot_aperture_window(img, apmask, img_shape):
+    """This function plots the window of the image that has been selected for a spatial profile."""
+
+    #Generate a matrix to hold image values
+    image = np.zeros([img_shape[0],img_shape[1]])
+
+    #Fill in image values with flux values at fit (i.e. good) pixels
+    image[apmask] += img[apmask]
+    
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    vmin=abs(image).min()
+    print "vmin is", vmin
+    P.gray()
+    
+    im = ax.imshow(image,vmin=-226,vmax=261,extent=(0,1581,0,1026))
+    P.tight_layout()
+    P.show()
+
+def plot_maximum_wave(cols, maxrows):
+    """This function plots the rows that have maxima as a function of column (wavelength)."""
+
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    
+    ax.plot(cols,maxrows, 'b*')
+    ax.set_ylabel('Rows')
+    ax.set_xlabel('Column / Wavelength')
+   
+    P.tight_layout()
+    P.show()
+
+def plot_max_trace_comparison(wave, maxval, estimate_maxval):
+    """This function plots up the input data for an interpolation
+       of maximum as a function of wavelength and compares that to
+       the input values that were used in the interpolation"""
+    
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    #print "maxval is", maxval
+    #sys.exit(1)
+    
+    ax.plot(wave,maxval, 'b+')
+    ax.plot(wave, estimate_maxval,'k-')
+    ax.set_ylabel('Maximum Value')
+    ax.set_xlabel('Wavelength')
+   
+    P.tight_layout()
+    P.show()
+
+def plot_max_smooth_trace_comparison(wave, estimate_maxval,smoothed_maxval):
+    """This function plots the raw and smoothed fit to the maximum value trace."""
+
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    #print "maxval is", maxval
+    #sys.exit(1)
+    
+    ax.plot(wave,estimate_maxval, 'ks')
+    ax.plot(wave,smoothed_maxval ,'r-')
+    ax.set_ylabel('Maximum Value')
+    ax.set_xlabel('Wavelength')
+   
+    P.tight_layout()
+    P.show()
+    
+    
 
 def specpolsignalmap(hdu,logfile="log.file",debug=False):
     """
@@ -64,7 +183,9 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         col_cr,row_cr = np.indices(sci_orc.T.shape) #2D Indices for the image Transpose was neccesary--don't know why
 
         #Spatial profile summed over large range of wavelengths, size of rows
-        cross_or = np.sum(sci_orc[:,cols/2-cols/16:cols/2+cols/16],axis=1) #Summed over wavelengths 1/8*no. of wavelengths?
+        wave_window = (cols/2-cols/16,cols/2+cols/16)
+        cross_or = np.sum(sci_orc[:,wave_window[0]:wave_window[1]],axis=1) #Summed over wavelengths 1/8*no. of wavelengths?
+        #plot_spatial_profile(summed_col=cross_or, rows=np.arange(rows), wav1=wav_orc[rows/2,wave_window[0]], wav2=wav_orc[rows/2,wave_window[1]])
         
         okprof_oyc = np.ones((rows,cols),dtype='bool')
         okprofsm_oyc = np.ones((rows,cols),dtype='bool')
@@ -76,7 +197,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         badbinnew_oyc = np.zeros_like(badbin_orc)
 
         # find spectrum roughly from max of central cut, then within narrow curved aperture
-        #Returns spatial value of central wavelengths?; not sure why 1-o is there/2 polarization spectra?
+        #Returns spatial value of central wavelengths?
         expectrow = np.zeros((cols),dtype='float32') + rows/2
         okwav_c = np.ones(lam_c.shape,dtype='bool')
         goodcols = okwav_c.sum() #Number of "good" wavelengths
@@ -84,7 +205,11 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         print "Number of good wavelengths is", goodcols
         
         #Find maximum signal along slit in window of 200 unbinned pixels centered on expected center
-        crossmaxval = np.max(cross_or[cols/2-100/rbin:cols/2+100/rbin])
+        unbinpix_wind = (100,100)
+        window = (rows/2-unbinpix_wind[0]/rbin,rows/2+unbinpix_wind[1]/rbin)
+                          
+        crossmaxval = np.max(cross_or[window[0]:window[1]])
+        #plot_maximum_row(summed_col=cross_or, rows=np.arange(rows),wav1=wav_orc[rows/2,wave_window[0]], wav2=wav_orc[rows/2,wave_window[1]],window=window,maxval=crossmaxval)
         
         #Find distance between maximum signal along slit and expected center
         drow = np.where(cross_or==crossmaxval)[0][0] - rows/2
@@ -93,15 +218,27 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         row_c = (expectrow + drow).astype(int)
                
         #Find rows that lie within 20 unbinned pixels of valid prediction
-        isaper_cr = ((row_cr-row_c[:,None])>=-20/rbin) & ((row_cr-row_c[:,None])<=20/rbin) & okwav_c[:,None]       
+        aperture_wind = (20,20)
+        #print "Row cr is",row_cr.shape
+        #print "row_c is", row_c[:,None].shape
+        #print "row_cr - row_c is",(row_cr-row_c[:,None]).shape
+        #sys.exit(1)
+                                   
+        
+        isaper_cr = ((row_cr-row_c[:,None])>=-aperture_wind[0]/rbin) & ((row_cr-row_c[:,None])<=aperture_wind[1]/rbin) & okwav_c[:,None]
+
+        #plot_aperture_window(img=sci_orc, apmask=isaper_cr.T,img_shape=sci_orc.shape)
 
         #Finds row index of maximum
-        maxrow_oc[okwav_c] = np.argmax(sci_orc.T[isaper_cr].reshape((goodcols,-1)),axis=1) \
-                                    + row_c[okwav_c] - 20/rbin
+        maxrow_oc[okwav_c] = np.argmax(sci_orc.T[isaper_cr].reshape((goodcols,-1)),axis=1)+ row_c[okwav_c] - aperture_wind[0]/rbin
+        #print "maxrow is",maxrow_oc[okwav_c]
+        
         #Finds value at that index
         maxval_oc[okwav_c] = sci_orc[maxrow_oc[okwav_c],okwav_c]
+        #sys.exit(1)
+        #plot_maximum_wave(wav_orc[maxrow_oc[okwav_c],okwav_c],maxrow_oc[okwav_c])
         
-        #Distance maximum in spatial direction is from center row
+        #Distance maximum in spatial direction is from maximum found using wavelength binned profile
         drow1_c = maxrow_oc - (rows/2 + drow)
 
         #Spatial location of maximum at central wavelength
@@ -112,11 +249,14 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #Find profile defined by maximum flagged OK
         okprof_c = (maxval_oc != 0) & okwav_c
 
-        #Traces profile defined by maximum with a 3rd order polynomial
-        drow2_c = np.polyval(np.polyfit(np.where(okprof_c)[0],drow1_c[okprof_c],3),(range(cols)))
+        #Fit Distance maximum in spatial direction is from maximum found using
+        #wavelength binned profile with a 3rd order polynomial
+        order_trace = 3
+        drow2_c = np.polyval(np.polyfit(np.where(okprof_c)[0],drow1_c[okprof_c],order_trace),(range(cols)))
 
         #Flags points less than 3 rows different than the poly. fit as good
-        okprof_c[okwav_c] &= np.abs(drow2_c - drow1_c)[okwav_c] < 3
+        err_pix = 3
+        okprof_c[okwav_c] &= np.abs(drow2_c - drow1_c)[okwav_c] < err_pix
 
         norm_rc = np.zeros((rows,cols))
         normsm_rc = np.zeros((rows,cols))
@@ -128,6 +268,9 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         for r in range(rows):
             norm_rc[r] = maxval_fit_center_lambda(wav_orc[r])
 
+        #plot_max_trace_comparison(wave=np.arange(cols)[okprof_c], maxval=maxval_oc[okprof_c], estimate_maxval=norm_rc[trow_o+10,okprof_c])
+        #sys.exit(1)
+
         #Flag estimated points that are zero as not OK
         okprof_rc = (norm_rc != 0.)
       
@@ -137,7 +280,9 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         #Flag smooth points that are 0.0 as not OK
         okprofsm_rc = (normsm_rc != 0.)
-
+        #print "wave indexed size is",wav_orc[okprofsm_rc].shape
+        #sys.exit(1)
+        plot_max_smooth_trace_comparison(wave=wav_orc[okprofsm_rc], estimate_maxval=norm_rc[okprofsm_rc],smoothed_maxval=normsm_rc[okprofsm_rc])
     
 
         #Normalize science frame by the maximum at each wavelength
@@ -188,6 +333,8 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         log.message('Target center row: O    %4i' % (trow_o), with_header=False)
         log.message('Bottom, top row:   O %4i %4i \n' \
                 % tuple(edgerow_od.flatten()), with_header=False)
+
+        plot_image(sci_orc, bpm=badbinnew_oyc, img_shape=sci_orc.shape)
         #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
         sys.exit(1)
                 
