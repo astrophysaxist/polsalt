@@ -177,6 +177,19 @@ def plot_2d_profile(img, img_shape):
     im = ax.imshow(img,vmin=0.1,vmax=1,extent=(0,img_shape[1],0,img_shape[0]))
     P.tight_layout()
     P.show()
+
+def plot_profile(rows, profile):
+    """This function plots the 1D spatial profile"""
+
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    
+    ax.plot(rows,profile, 'g-')
+    ax.set_ylabel('Percent')
+    ax.set_xlabel('Rows')
+   
+    P.tight_layout()
+    P.show()
     
 
 def specpolsignalmap(hdu,logfile="log.file",debug=False):
@@ -407,46 +420,74 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
        
        
                 
-    # Mask off atmospheric A- and B-band (profile only) No need
+        # Mask off atmospheric A- and B-band (profile only) No need
         #ABband = np.array([[7582.,7667.],[6856.,6892.]])         
         #for b in (0,1): okprof_oyc &= ~((wav_oyc>ABband[b,0])&(wav_oyc<ABband[b,1]))
 
         profile_oyc *= okprof_oyc
         profilesm_oyc *= okprofsm_oyc
-         
-        plot_2d_profile(profilesm_oyc, profilesm_oyc.shape)
-        sys.exit(1)
-        #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
-        
 
+        #plot_profile(rows=np.arange(rows), profile=profile_oy)
+        
+        #plot_2d_profile(profilesm_oyc, profilesm_oyc.shape)
+        #sys.exit(1)
+        
         # Stray light search by looking for seeing-sized features in spatial and spectral profile                   
-        profile_Y = 0.5*(profile_oy[trow_o-16:trow_o+17] 
-        profile_Y = interp1d(np.arange(-16.,17.),profile_Y,kind='cubic')(np.arange(-16.,16.,1./16))
-        fwhm = 3.*(np.argmax(profile_Y[256:]<0.5) + np.argmax(profile_Y[256:0:-1]<0.5))/16.
+
+        #Select the central window (profile_wind[1] - profile_wind[0]) of odd number so there's a center
+        profile_wind = (16,17)
+        profile_Y = profile_oy[trow_o-profile_wind[0]:trow_o+profile_wind[1]] 
+
+        #Fineness of interpolation in profile window
+        step_size = 2**-4
+        #Interpolate values in chosen central window given desired fineness
+        profile_Y = interp1d(np.arange(-1.0*profile_wind[0],1.0*profile_wind[1]),profile_Y,kind='cubic')(np.arange(-1.0*profile_wind[0],1.0*profile_wind[0],step_size))
+
+        #ghost search kernel is size of 3*fwhm and sums to zero
+        #Calculate full width half max using argmax to get index/row values of the
+        #half max points.
+        #N.B. [256:0:-1] indexes elements 256:0 backwards to find most positive <0.5 point first
+        half_pt = np.int(profile_wind[0]/step_size)
+        fwhm = 3.*(np.argmax(profile_Y[half_pt:]<0.5) + np.argmax(profile_Y[half_pt:0:-1]<0.5))*step_size
+
+        #Define kernel that looks for features 3*fwhm in size
         kernelcenter = np.ones(np.around(fwhm/2)*2+2)
         kernelbkg = np.ones(kernelcenter.shape[0]+4)
         kernel = -kernelbkg*kernelcenter.sum()/(kernelbkg.sum()-kernelcenter.sum())
-        kernel[2:-2] = kernelcenter                # ghost search kernel is size of 3*fwhm and sums to zero
+        kernel[2:-2] = kernelcenter                
 
         # First, look for second order as feature in spatial direction** No Need***
-        ghost_oyc = convolve1d(profilesm_oyc,kernel,axis=1,mode='constant',cval=0.)
+        #Convolve ghost seeking kernel with each row (spatial direction)
+        ghost_oyc = convolve1d(profilesm_oyc,kernel,axis=0,mode='constant',cval=0.)
+
+        #Construct bad pixel map for image used to search for ghost using previously created masks
         isbadghost_oyc = (~okprofsm_oyc | badbin_oyc | badbinnew_oyc)     
-        isbadghost_oyc |= convolve1d(isbadghost_oyc.astype(int),kernelbkg,axis=1,mode='constant',cval=1) != 0
-        isbadghost_oyc[o,trow_o[o]-3*fwhm/2:trow_o[o]+3*fwhm/2,:] = True
+
+        #Convolve bad pixel map of ghost search image with unity kernel 
+        #Add any pixels that are not zero after convolution to bad mask
+        isbadghost_oyc |= convolve1d(isbadghost_oyc.astype(int),kernelbkg,axis=0,mode='constant',cval=1) != 0
+
+        #Add any pixels within 3 FWHM to bad pixel mask
+        isbadghost_oyc[trow_o-3*fwhm/2:trow_o+3*fwhm/2,:] = True
+
+        #Generate image of features that have been masked as ghosts
+        #Bad pixels = 1.0, Good pixels= 0.0
         ghost_oyc *= (~isbadghost_oyc).astype(int)                
-        stdghost_oc = np.std(ghost_oyc,axis=1)
+        stdghost_oc = np.std(ghost_oyc,axis=0)
         boxbins = (int(2.5*fwhm)/2)*2 + 1
         boxrange = np.arange(-int(boxbins/2),int(boxbins/2)+1)
-
-    
+        #plot_2d_profile(ghost_oyc, ghost_oyc.shape)
+        #sys.exit(1)
+        #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
+        
         # Remaining ghosts have same position O and E. _Y = row around target, both beams
         Rows = int(2*np.abs(trow_o[:,None]-edgerow_od).min()+1)
         row_oY = np.add.outer(trow_o,np.arange(Rows)-(Rows+1)/2).astype(int)
         ghost_Yc = 0.5*ghost_oyc[np.arange(2)[:,None],row_oY,:].sum(axis=0) 
         isbadghost_Yc = isbadghost_oyc[np.arange(2)[:,None],row_oY,:].any(axis=0)
-        stdghost_c = np.std(ghost_Yc,axis=0)
-        profile_Yc = 0.5*profilesm_oyc[np.arange(2)[:,None],row_oY,:].sum(axis=0) 
-        okprof_Yc = okprof_oyc[np.arange(2)[:,None],row_oY,:].all(axis=0)               
+        #stdghost_c = np.std(ghost_Yc,axis=0)
+        #profile_Yc = 0.5*profilesm_oyc[np.arange(2)[:,None],row_oY,:].sum(axis=0) 
+        #okprof_Yc = okprof_oyc[np.arange(2)[:,None],row_oY,:].all(axis=0)               
                     
         # Search for Littrow ghost as undispersed object off target
         # Convolve with ghost kernal in spectral direction, divide by standard deviation, 
@@ -506,9 +547,9 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
             Ymask2 = Ynbr + np.argmax(nbrrat_Y[Ynbr:] < nbrmask)
             strengthnbr = nbr_Y[Ynbr]/nbr_Y[Rows/2]
             okprof_Y[Ymask1:Ymask2+1] = False
-            for o in (0,1):
-                badbinnew_oyc[o,row_oY[o,Ymask1:Ymask2],:] = True 
-                okprof_oyc[o,row_oY[o,Ymask1:Ymask2],:] = False
+            #for o in (0,1):
+            badbinnew_oyc[row_oY[o,Ymask1:Ymask2],:] = True 
+            okprof_oyc[row_oY[o,Ymask1:Ymask2],:] = False
 
             log.message('Neighbor spectrum masked: strength %7.4f, ypos %5.1f' \
                             % (strengthnbr,(Ynbr-Rows/2)*(rbin/8.)), with_header=False)
@@ -527,8 +568,8 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         if debug: hduprof.writeto(sciname+"_skyflatprof.fits",clobber=True)
         corerows = (profile_Y - np.median(profile_Y[profile_Y>0]) > 0.015).sum()
 
-        lsqcof_oC,bkg_oyc,badlinerow_oy,badbinmore_oyc,isline_oyc = \
-            skyflat(hduprof,trow_o,corerows,axisrow_o,log,datadir,debug)
+        #lsqcof_oC,bkg_oyc,badlinerow_oy,badbinmore_oyc,isline_oyc = \
+        #    skyflat(hduprof,trow_o,corerows,axisrow_o,log,datadir,debug)
 
         # compute skyflat in original geometry **No need**
         #    skyflat_orc = np.ones((2,rows,cols))
