@@ -478,58 +478,85 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         boxrange = np.arange(-int(boxbins/2),int(boxbins/2)+1)
         #plot_2d_profile(ghost_oyc, ghost_oyc.shape)
         #sys.exit(1)
-        #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
-        
+               
         # Remaining ghosts have same position O and E. _Y = row around target, both beams
-        Rows = int(2*np.abs(trow_o[:,None]-edgerow_od).min()+1)
-        row_oY = np.add.outer(trow_o,np.arange(Rows)-(Rows+1)/2).astype(int)
-        ghost_Yc = 0.5*ghost_oyc[np.arange(2)[:,None],row_oY,:].sum(axis=0) 
-        isbadghost_Yc = isbadghost_oyc[np.arange(2)[:,None],row_oY,:].any(axis=0)
-        #stdghost_c = np.std(ghost_Yc,axis=0)
-        #profile_Yc = 0.5*profilesm_oyc[np.arange(2)[:,None],row_oY,:].sum(axis=0) 
-        #okprof_Yc = okprof_oyc[np.arange(2)[:,None],row_oY,:].all(axis=0)               
+
+        #Number of rows between target and edges
+        Rows = int(2*np.abs(trow_o-edgerow_od).min()+1)
+
+        #Find indices of the 'Rows' rows centered on target
+        row_oY = (trow_o + np.arange(Rows)-(Rows+1)/2).astype(int)
+
+        #Select these rows to form the following 2D arrays
+        ghost_Yc = ghost_oyc[row_oY,:]
+        isbadghost_Yc = isbadghost_oyc[row_oY,:]
+        stdghost_c = np.std(ghost_Yc,axis=0)
+        profile_Yc = profilesm_oyc[row_oY,:] 
+        okprof_Yc = okprof_oyc[row_oY,:]               
                     
         # Search for Littrow ghost as undispersed object off target
         # Convolve with ghost kernal in spectral direction, divide by standard deviation, 
         #  then add up those > 10 sigma within fwhm box
+
+        #Make bad pixel mask for littrow ghost search
         isbadlitt_Yc = isbadghost_Yc | \
             (convolve1d(isbadghost_Yc.astype(int),kernelbkg,axis=1,mode='constant',cval=1) != 0)
+        #Convolve kernel with ghost search image and multiply bad pixels by 0
         litt_Yc = convolve1d(ghost_Yc,kernel,axis=-1,mode='constant',cval=0.)*(~isbadlitt_Yc).astype(int)
+        #Divide by standard deviation
         litt_Yc[:,stdghost_c>0] /= stdghost_c[stdghost_c>0]
+        #Set pixels with signal to noise less than 10 to zero
         litt_Yc[litt_Yc < 10.] = 0.
+
+        #Convolve by column (wavelength) and row (spatial direction) using unity kernel
         for c in range(cols):
+            #Fill array with convolution from center of boxbin kernel for Rows rows
             litt_Yc[:,c] = np.convolve(litt_Yc[:,c],np.ones(boxbins))[boxbins/2:boxbins/2+Rows] 
         for Y in range(Rows):
+            #Fill array with convolution from center of boxbin kernel for all cols columns
             litt_Yc[Y] = np.convolve(litt_Yc[Y],np.ones(boxbins))[boxbins/2:boxbins/2+cols] 
-        Rowlitt,collitt = np.argwhere(litt_Yc == litt_Yc[:col2nd0].max())[0]
-        littbox_Yc = np.meshgrid(boxrange+Rowlitt,boxrange+collitt)
 
+        #Save index of the maximum
+        Rowlitt,collitt = np.argwhere(litt_Yc == np.nanmax(litt_Yc[:cols]))[0]
+        #Define 2D indices of the maximum
+        littbox_Yc = np.meshgrid(boxrange+Rowlitt,boxrange+collitt)
 
         # Mask off Littrow ghost (profile and image)
         if litt_Yc[Rowlitt,collitt] > 100:
-            islitt_oyc = np.zeros((2,rows,cols),dtype=bool)
-            for o in (0,1):
-                for y in np.arange(edgerow_od[o,0],edgerow_od[o,1]+1):
-                    if profilesm_oyc[o,y,okprof_oyc[o,y,:]].shape[0] == 0: continue
-                    profile_oy[o,y] = np.median(profilesm_oyc[o,y,okprof_oyc[o,y]])
-                dprofile_yc = profilesm_oyc[o] - profile_oy[o,:,None]
-                littbox_yc = np.meshgrid(boxrange+Rowlitt-Rows/2+trow_o[o],boxrange+collitt)
-                islitt_oyc[o][littbox_yc] =  \
-                    dprofile_yc[littbox_yc] > 10.*np.sqrt(var_oyc[o][littbox_yc])
+            islitt_oyc = np.zeros((rows,cols),dtype=bool)
+
+            #Compute median spatial profile by row
+            for y in np.arange(edgerow_od[0],edgerow_od[1]):
+                #Skip this row if there aren't any unmasked pixels
+                if profilesm_oyc[y,okprof_oyc[y,:]].shape[0] == 0: continue
+                profile_oy[y] = np.median(profilesm_oyc[y,okprof_oyc[y]])
+
+            #Compute difference between median profile and 2D smooth profile
+            dprofile_yc = profilesm_oyc - profile_oy[:,None]
+            #Setup box that indexes littrow maximum found earlier
+            littbox_yc = np.meshgrid(boxrange+Rowlitt-Rows/2+trow_o,boxrange+collitt)
+            
+            #Flag points in littrow box that are factor of 10 above noise compared to median profile
+            islitt_oyc[littbox_yc] = dprofile_yc[littbox_yc] > 10.*np.sqrt(var_oyc[littbox_yc])
+
+            #If there are mod. S/N points in Littrow box...
             if islitt_oyc.sum():
-                wavlitt = wav_oyc[0,trow_o[0],collitt]
+                #Find their strength and wavelength
+                wavlitt = wav_oyc[trow_o,collitt]
                 strengthlitt = dprofile_yc[littbox_yc].max()
+                #Flag points and add to bad pixell masks
                 okprof_oyc[islitt_oyc] = False
                 badbinnew_oyc |= islitt_oyc
                 isbadghost_Yc[littbox_Yc] = True
                 ghost_Yc[littbox_Yc] = 0.
             
                 log.message('Littrow ghost masked, strength %7.4f, ypos %5.1f", wavel %7.1f' \
-                        % (strengthlitt,(Rowlitt-Rows/2)*(rbin/8.),wavlitt), with_header=False)        
+                        % (strengthlitt,(Rowlitt-Rows/2)*(rbin/8.),wavlitt), with_header=False)
+    
 
         # Anything left as spatial profile feature is assumed to be neighbor non-target stellar spectrum
         # Mask off spectra above a threshhold
-        okprof_Yc = okprof_oyc[np.arange(2)[:,None],row_oY,:].all(axis=0)
+        okprof_Yc = okprof_oyc[row_oY,:]
         okprof_Y = okprof_Yc.any(axis=1)
         profile_Y = np.zeros(Rows,dtype='float32')
         for Y in np.where(okprof_Y)[0]: profile_Y[Y] = np.median(profile_Yc[Y,okprof_Yc[Y]])
@@ -538,7 +565,8 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         nbr_Y = convolve1d(profile_Y,kernel,mode='constant',cval=0.)
         nbrmask = 1.0
         count = 0
-        while (nbr_Y[okprof_Y]/profile_Y[okprof_Y]).max() > nbrmask:
+        print "comp term is",np.nanmax(nbr_Y[okprof_Y]/profile_Y[okprof_Y])
+        while np.nanmax(nbr_Y[okprof_Y]/profile_Y[okprof_Y]) > nbrmask:
             count += 1
             nbrrat_Y = np.zeros(Rows)
             nbrrat_Y[okprof_Y] = nbr_Y[okprof_Y]/profile_Y[okprof_Y]
@@ -548,15 +576,17 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
             strengthnbr = nbr_Y[Ynbr]/nbr_Y[Rows/2]
             okprof_Y[Ymask1:Ymask2+1] = False
             #for o in (0,1):
-            badbinnew_oyc[row_oY[o,Ymask1:Ymask2],:] = True 
-            okprof_oyc[row_oY[o,Ymask1:Ymask2],:] = False
+            badbinnew_oyc[row_oY[Ymask1:Ymask2],:] = True 
+            okprof_oyc[row_oY[Ymask1:Ymask2],:] = False
 
             log.message('Neighbor spectrum masked: strength %7.4f, ypos %5.1f' \
                             % (strengthnbr,(Ynbr-Rows/2)*(rbin/8.)), with_header=False)
             if count>10: break
 
         if debug: np.savetxt(sciname+"_nbrdata_Y.txt",np.vstack((profile_Y,nbr_Y,okprof_Y.astype(int))).T,fmt="%8.5f %8.5f %3i")         
-
+        sys.exit(1)
+        #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
+        
         okprof_oyc &= (wav_oyc > 0.)
         hduprof = pyfits.PrimaryHDU(header=hdu[0].header)   
         hduprof = pyfits.HDUList(hduprof)  
