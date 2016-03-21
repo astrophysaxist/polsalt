@@ -137,7 +137,46 @@ def plot_max_smooth_trace_comparison(wave, estimate_maxval,smoothed_maxval):
    
     P.tight_layout()
     P.show()
+
+def plot_max_fits(img, img_shape, mask):
+    """This function plots a 2D image of the fits to the maximum
+       estimated by interpolating the maxima at all wavelengths"""
+
+    #Generate a matrix to hold image values
+    image = np.zeros([img_shape[0],img_shape[1]])
+
+    #Fill in image values with flux values at fit (i.e. good) pixels
+    image[mask] += img[mask]
+
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    vmin = np.nanmin(image)
+    med = np.median(image)
+    sd = np.std(image,ddof=1)
+    vmax = np.nanmax(image)
     
+    print "vmin is", vmin
+    print "vmax is",vmax
+    P.gray()
+    
+    im = ax.imshow(image,vmin=1e-1,vmax=1,extent=(0,1581,0,1026))
+    P.tight_layout()
+    P.show()
+
+def plot_2d_profile(img, img_shape):
+    """This function plots a 2D image of the provided profile"""
+
+    #Generate a matrix to hold image values
+       
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    
+   
+    P.gray()
+    
+    im = ax.imshow(img,vmin=0.1,vmax=1,extent=(0,img_shape[1],0,img_shape[0]))
+    P.tight_layout()
+    P.show()
     
 
 def specpolsignalmap(hdu,logfile="log.file",debug=False):
@@ -249,7 +288,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #Find profile defined by maximum flagged OK
         okprof_c = (maxval_oc != 0) & okwav_c
 
-        #Fit Distance maximum in spatial direction is from maximum found using
+        #Fit Distance that maximum in spatial direction is from maximum found using
         #wavelength binned profile with a 3rd order polynomial
         order_trace = 3
         drow2_c = np.polyval(np.polyfit(np.where(okprof_c)[0],drow1_c[okprof_c],order_trace),(range(cols)))
@@ -267,13 +306,16 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #Fill in maximum value for each wavelength using fit
         for r in range(rows):
             norm_rc[r] = maxval_fit_center_lambda(wav_orc[r])
-
+            
+        
         #plot_max_trace_comparison(wave=np.arange(cols)[okprof_c], maxval=maxval_oc[okprof_c], estimate_maxval=norm_rc[trow_o+10,okprof_c])
         #sys.exit(1)
 
         #Flag estimated points that are zero as not OK
         okprof_rc = (norm_rc != 0.)
-      
+        #plot_max_fits(norm_rc, norm_rc.shape, mask=okprof_rc)
+        #sys.exit(1)
+        
         # make a slitwidth smoothed norm and profile for the background area
         for r in range(rows):
             normsm_rc[r] = boxsmooth1d(norm_rc[r],okprof_rc[r],(8.*slitwidth*profsmoothfac)/cbin,0.5)
@@ -281,49 +323,76 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #Flag smooth points that are 0.0 as not OK
         okprofsm_rc = (normsm_rc != 0.)
         #print "wave indexed size is",wav_orc[okprofsm_rc].shape
-        #sys.exit(1)
-        plot_max_smooth_trace_comparison(wave=wav_orc[okprofsm_rc], estimate_maxval=norm_rc[okprofsm_rc],smoothed_maxval=normsm_rc[okprofsm_rc])
-    
 
+        #plot_max_fits(normsm_rc, normsm_rc.shape, mask=okprofsm_rc)
+        #sys.exit(1)
+        #sys.exit(1)
+        #plot_max_smooth_trace_comparison(wave=wav_orc[okprofsm_rc], estimate_maxval=norm_rc[okprofsm_rc],smoothed_maxval=normsm_rc[okprofsm_rc])
+    
         #Normalize science frame by the maximum at each wavelength
+        #Will result in 1 at the central maximum of 2D spectra, <1 everywhere else
         profile_orc[okprof_rc] = sci_orc[okprof_rc]/norm_rc[okprof_rc]
+        #plot_max_fits(profile_orc, profile_orc.shape, mask=okprof_rc)
+        #sys.exit(1)
 
         #Normalize science frame by the smoothed maximum at each wavelength
+        #Will result in 1 at the central maximum of 2D spectra, <1 everywhere else
+        
         profilesm_orc[okprofsm_rc] = sci_orc[okprofsm_rc]/normsm_rc[okprofsm_rc]
+        #plot_max_fits(profilesm_orc, profilesm_orc.shape, mask=okprofsm_rc)
+        #sys.exit(1)
 
         #Normalize variance frame by maximum at each wavelength squared
         var_orc[okprof_rc] = var_orc[okprof_rc]/norm_rc[okprof_rc]**2 #Assumes this is electrons?
 
+        #Distance maxima (as function of columns/wavelength) are from maximum of central column/wavelength 
         drow_oc = (expectrow - expectrow[cols/2] + drow2_c -drow2_c[cols/2])
 
         # take out profile spatial curvature and tilt (r -> y)
+       
+
+        #Threshold value for points from spline interpolation of bad pixel mask
+        bad_val = 0.1
+        
+        #Aligns maxima to the same row as the central column/wavelength maximum
         for c in range(cols):
             profile_oyc[:,c] = shift(profile_orc[:,c],-drow_oc[c],order=1)
             profilesm_oyc[:,c] = shift(profilesm_orc[:,c],-drow_oc[c],order=1)
-            badbin_oyc[:,c] = shift(badbin_orc[:,c].astype(int),-drow_oc[c],cval=1,order=1) > 0.1
+            #Flag all new shifted (spline interpolated) bad pixels with values greater than bad_val as bad
+            badbin_oyc[:,c] = shift(badbin_orc[:,c].astype(int),-drow_oc[c],cval=1,order=1) > bad_val
             var_oyc[:,c] = shift(var_orc[:,c],-drow_oc[c],order=1)
             wav_oyc[:,c] = shift(wav_orc[:,c],-drow_oc[c],order=1)
 
+        #Create new masks that eliminate updated bad pixel mask after shifting
         okprof_oyc = ~badbin_oyc & okprof_rc
         okprofsm_oyc = ~badbin_oyc & okprofsm_rc
         
         
-        
-        wav_oyc[1:rows-1,:] *= np.logical_not((wav_oyc[1:rows-1,:]>0) & \
-                                (wav_oyc[:rows-2,:]*wav_oyc[2:rows,:]==0)).astype(int)                  # square off edge
+        #Sets wavelength values not on the spatial edges to 0 if the row
+        #(spatial direction) before or after was 0 (posisbly from being outside boundary of spline above).
+        # square off edge        
+        wav_oyc[1:rows-1,:] *= np.logical_not((wav_oyc[1:rows-1,:]>0) & (wav_oyc[:rows-2,:]*wav_oyc[2:rows,:]==0)).astype(int)               
+
+        #Compute median over sample of columns (wavelengths) to form profile as function of row (spatial direction)
+        #Note axis =-1 selects the last axis dim in array
         profile_oy = np.median(profilesm_oyc,axis=-1)
-
-       
-
+        
         # Take FOV from wavmap
         edgerow_od = np.zeros((2))
         badrow_oy = np.zeros((rows),dtype=bool)
-        #for o in (0,1):
+
+        #Finds first place wavelength at center column is positive
+        #And (after reversing ordering using ::-1) last place wavelength is positive
         edgerow_od[0] = np.argmax(wav_oyc[:,cols/2] > 0.)
         edgerow_od[1] = rows-np.argmax((wav_oyc[:,cols/2] > 0.)[::-1])
+
+        #Flags everything outside the edges as bad
         badrow_oy = ((np.arange(rows)<edgerow_od[0]) | (np.arange(rows)>edgerow_od[1]))
+
+        #Mid-point between found edges
         axisrow_o = edgerow_od.mean(axis=0)
 
+        #Add newly flagged pixels to masks
         okprof_oyc[badrow_oy,:] = False            
         badbinnew_oyc[badrow_oy,:] = True
 
@@ -334,9 +403,9 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         log.message('Bottom, top row:   O %4i %4i \n' \
                 % tuple(edgerow_od.flatten()), with_header=False)
 
-        plot_image(sci_orc, bpm=badbinnew_oyc, img_shape=sci_orc.shape)
-        #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
-        sys.exit(1)
+        #plot_image(sci_orc, bpm=badbinnew_oyc, img_shape=sci_orc.shape)
+       
+       
                 
     # Mask off atmospheric A- and B-band (profile only) No need
         #ABband = np.array([[7582.,7667.],[6856.,6892.]])         
@@ -344,10 +413,14 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         profile_oyc *= okprof_oyc
         profilesm_oyc *= okprofsm_oyc
+         
+        plot_2d_profile(profilesm_oyc, profilesm_oyc.shape)
+        sys.exit(1)
+        #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
+        
 
         # Stray light search by looking for seeing-sized features in spatial and spectral profile                   
-        profile_Y = 0.5*(profile_oy[0,trow_o[0]-16:trow_o[0]+17] + \
-                        profile_oy[1,trow_o[1]-16:trow_o[1]+17])
+        profile_Y = 0.5*(profile_oy[trow_o-16:trow_o+17] 
         profile_Y = interp1d(np.arange(-16.,17.),profile_Y,kind='cubic')(np.arange(-16.,16.,1./16))
         fwhm = 3.*(np.argmax(profile_Y[256:]<0.5) + np.argmax(profile_Y[256:0:-1]<0.5))/16.
         kernelcenter = np.ones(np.around(fwhm/2)*2+2)
