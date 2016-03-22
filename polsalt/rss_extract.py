@@ -178,16 +178,20 @@ def plot_2d_profile(img, img_shape):
     P.tight_layout()
     P.show()
 
-def plot_profile(rows, profile):
+def plot_profile(rows, profile, mask=None):
     """This function plots the 1D spatial profile"""
 
     fig = P.figure()
     ax = fig.add_subplot(111)
-    
-    ax.plot(rows,profile, 'g-')
-    ax.set_ylabel('Percent')
+    if mask == None:
+        ax.plot(rows,profile, 'g-')
+    else:
+        ax.plot(rows[mask],profile[mask], 'g*',label='Valid Pixels')
+        ax.plot(rows[~mask],profile[~mask], 'rx',label='Masked Pixels')
+    ax.set_ylabel('Profile')
     ax.set_xlabel('Rows')
-   
+
+    P.legend(loc=0)
     P.tight_layout()
     P.show()
     
@@ -556,104 +560,129 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         # Anything left as spatial profile feature is assumed to be neighbor non-target stellar spectrum
         # Mask off spectra above a threshhold
+
+        #Retrieve mask (ok values) from 'Rows' rows around target
         okprof_Yc = okprof_oyc[row_oY,:]
+        #Create mask that selects each row that has any valid/OK points
         okprof_Y = okprof_Yc.any(axis=1)
+        #Spatial profile of 'Rows' rows centered on target
         profile_Y = np.zeros(Rows,dtype='float32')
-        for Y in np.where(okprof_Y)[0]: profile_Y[Y] = np.median(profile_Yc[Y,okprof_Yc[Y]])
+
+        #Find the median spatial profile for each row that had any valid/OK pixels
+        for Y in np.where(okprof_Y)[0]:
+            profile_Y[Y] = np.median(profile_Yc[Y,okprof_Yc[Y]])
+
+        #Define row (half FWHM plus 5 pix)
+        #Why this row?
         avoid = int(np.around(fwhm/2)) +5
+        print "Avoid is", avoid
+        #plot_profile(np.arange(Rows), profile_Y, mask=okprof_Y)
+
+        #Mask off the first and last avoid pixels in addition to the central 2*avoid pixels around target
         okprof_Y[range(avoid) + range(Rows/2-avoid,Rows/2+avoid) + range(Rows-avoid,Rows)] = False
+        #print "Sum of okprof is",okprof_Y.sum()
+        #plot_profile(np.arange(Rows), profile_Y, mask=okprof_Y)
+        #sys.exit(1)
+
+        #Convolve Rows-length median profile with previously defined kernel
         nbr_Y = convolve1d(profile_Y,kernel,mode='constant',cval=0.)
+        #plot_profile(np.arange(Rows), nbr_Y, mask=okprof_Y)
+
+        #Define ratio threshold to search for other peaks
         nbrmask = 1.0
         count = 0
+        
+        #Define maximum number of peaks to mask
+        max_peaks = 20
         print "comp term is",np.nanmax(nbr_Y[okprof_Y]/profile_Y[okprof_Y])
+
+        #While the convolved median profile (ignoring target) is greater than the median profile (ignoring target)
         while np.nanmax(nbr_Y[okprof_Y]/profile_Y[okprof_Y]) > nbrmask:
             count += 1
+            #Find location of the possible peak that showed up in convolved profile
             nbrrat_Y = np.zeros(Rows)
             nbrrat_Y[okprof_Y] = nbr_Y[okprof_Y]/profile_Y[okprof_Y]
-            Ynbr = np.where(nbrrat_Y == nbrrat_Y.max())[0]
+            Ynbr = np.where(nbrrat_Y == np.nanmax(nbrrat_Y))[0]
+           
+            #Define mask
+            #Find first index in reverse order that is below threshold
             Ymask1 = Ynbr - np.argmax(nbrrat_Y[Ynbr::-1] < nbrmask)
+            #Find first index past peak that is below threshold
             Ymask2 = Ynbr + np.argmax(nbrrat_Y[Ynbr:] < nbrmask)
+
+            #Record strength relative to target
             strengthnbr = nbr_Y[Ynbr]/nbr_Y[Rows/2]
+
+            #Add peak to bad pixel masks
             okprof_Y[Ymask1:Ymask2+1] = False
-            #for o in (0,1):
             badbinnew_oyc[row_oY[Ymask1:Ymask2],:] = True 
             okprof_oyc[row_oY[Ymask1:Ymask2],:] = False
 
             log.message('Neighbor spectrum masked: strength %7.4f, ypos %5.1f' \
                             % (strengthnbr,(Ynbr-Rows/2)*(rbin/8.)), with_header=False)
-            if count>10: break
+            if count>max_peaks: break
 
-        if debug: np.savetxt(sciname+"_nbrdata_Y.txt",np.vstack((profile_Y,nbr_Y,okprof_Y.astype(int))).T,fmt="%8.5f %8.5f %3i")         
-        sys.exit(1)
-        #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
+        if debug: np.savetxt(sciname+"_nbrdata_Y.txt",np.vstack((profile_Y,nbr_Y,okprof_Y.astype(int))).T,fmt="%8.5f %8.5f %3i")
+        #plot_profile(np.arange(Rows), profile_Y, mask=okprof_Y)
+        #sys.exit(1)
         
+        #Mark only values with positive wavelength as OK
         okprof_oyc &= (wav_oyc > 0.)
-        hduprof = pyfits.PrimaryHDU(header=hdu[0].header)   
-        hduprof = pyfits.HDUList(hduprof)  
+
+        #Mark only values with valid values as OK
+        okprof_oyc &= ~np.isnan(wav_oyc)
+
+        #Save smoothed profile, masked variance map, bad pixel mask, and wavelength map to file
+        hduprof = pf.PrimaryHDU(header=hdu[0].header)   
+        hduprof = pf.HDUList(hduprof)  
         header=hdu['SCI'].header.copy()       
-        hduprof.append(pyfits.ImageHDU(data=profilesm_oyc.astype('float32'), header=header, name='SCI'))
-        hduprof.append(pyfits.ImageHDU(data=(var_oyc*okprof_oyc).astype('float32'), header=header, name='VAR'))
-        hduprof.append(pyfits.ImageHDU(data=(~okprof_oyc).astype('uint8'), header=header, name='BPM'))
-        hduprof.append(pyfits.ImageHDU(data=wav_oyc.astype('float32'), header=header, name='WAV'))
+        hduprof.append(pf.ImageHDU(data=profilesm_oyc.astype('float32'), header=header, name='SCI'))
+        hduprof.append(pf.ImageHDU(data=(var_oyc*okprof_oyc).astype('float32'), header=header, name='VAR'))
+        hduprof.append(pf.ImageHDU(data=(~okprof_oyc).astype('uint8'), header=header, name='BPM'))
+        hduprof.append(pf.ImageHDU(data=wav_oyc.astype('float32'), header=header, name='WAV'))
+
         if debug: hduprof.writeto(sciname+"_skyflatprof.fits",clobber=True)
-        corerows = (profile_Y - np.median(profile_Y[profile_Y>0]) > 0.015).sum()
 
-        #lsqcof_oC,bkg_oyc,badlinerow_oy,badbinmore_oyc,isline_oyc = \
-        #    skyflat(hduprof,trow_o,corerows,axisrow_o,log,datadir,debug)
-
-        # compute skyflat in original geometry **No need**
-        #    skyflat_orc = np.ones((2,rows,cols))
-        #    Cofs = lsqcof_oC.shape[0]
-        #    if Cofs>0:
-        #        wavmin,wavmax = np.around([wav_oyc[:,rows/2,:].min(),wav_oyc[:,rows/2,:].max()],1)
-        #        for o in (0,1):
-        #            outr_f,outc_f = np.indices((rows,cols)).reshape((2,-1))
-        #            drow_f = np.broadcast_arrays(-drow_oc[o],np.zeros((rows,cols)))[0].flatten()
-        #            outrow_f = (outr_f - axisrow_o[o] + drow_f)/(0.5*rows)
-        #           outwav_f = (wav_orc[o].flatten()-np.mean([wavmin,wavmax]))/(0.5*(wavmax - wavmin))                                
-        #           aout_fC = (np.vstack((outrow_f,outrow_f**2,outrow_f*outwav_f,outrow_f**2*outwav_f))).T             
-        #           skyflat_orc[o] = (np.dot(aout_fC,lsqcof_oC[o]) + 1.).reshape((rows,cols))
-        
         #compute stellar psf in original geometry for extraction
         # use profile normed to (unsmoothed) stellar spectrum, new badpixmap, removing background continuum 
-        badbinnew_oyc |= badbinmore_oyc                
-        isbkgcont_oyc = ~(badbinnew_oyc | isline_oyc | badlinerow_oy[:,:,None])
-        targetrow_od = np.zeros((2,2))   
+                     
+        isbkgcont_oyc = ~(badbinnew_oyc)
+        targetrow_od = np.zeros((2))   
         badbinnew_orc = np.zeros_like(badbin_orc)
         isbkgcont_orc = np.zeros_like(badbin_orc)
-        psf_orc = np.zeros_like(profile_orc)      
-        isedge_oyc = (np.arange(rows)[:,None] < edgerow_od[:,None,None,0]) | \
-            (np.indices((rows,cols))[0] > edgerow_od[:,None,None,1])
-        isskycont_oyc = (((np.arange(rows)[:,None] < edgerow_od[:,None,None,0]+rows/16) |  \
-            (np.indices((rows,cols))[0] > edgerow_od[:,None,None,1]-rows/16)) & ~isedge_oyc)
+        psf_orc = np.zeros_like(profile_orc)
+        
+        isedge_oyc = (np.arange(rows)[:,None] < edgerow_od[None,None,0]) | \
+            (np.indices((rows,cols))[0] > edgerow_od[None,None,1])
+        isskycont_oyc = (((np.arange(rows)[:,None] < edgerow_od[None,None,0]+rows/16) |  \
+            (np.indices((rows,cols))[0] > edgerow_od[None,None,1]-rows/16)) & ~isedge_oyc)
 
-        for o in (0,1):                         # yes, it's not quite right to use skyflat_o*r*c                      
-            skycont_c = (bkg_oyc[o].T[isskycont_oyc[o].T]/ \
-                skyflat_orc[o].T[isskycont_oyc[o].T]).reshape((cols,-1)).mean(axis=-1)
-            skycont_yc = skycont_c*skyflat_orc[o]           
-            profile_oyc[o] -= skycont_yc
-            rblk = 1; cblk = int(cols/16)
-            
-            profile_oyc[o] = blksmooth2d(profile_oyc[o],(okprof_oyc[o] & ~isline_oyc[o]),   \
-                        rblk,cblk,0.25,mode='mean')              
-            for c in range(cols):
-                psf_orc[o,:,c] = shift(profile_oyc[o,:,c],drow_oc[o,c],cval=0,order=1)
-                isbkgcont_orc[o,:,c] = shift(isbkgcont_oyc[o,:,c].astype(int),drow_oc[o,c],cval=0,order=1) > 0.1
-                badbinnew_orc[o,:,c] = shift(badbinnew_oyc[o,:,c].astype(int),drow_oc[o,c],cval=1,order=1) > 0.1
-            targetrow_od[o,0] = trow_o[o] - np.argmax(isbkgcont_orc[o,trow_o[o]::-1,cols/2] > 0)
-            targetrow_od[o,1] = trow_o[o] + np.argmax(isbkgcont_orc[o,trow_o[o]:,cols/2] > 0)
+        #Define parameters of 2D smoothing
+        rblk = 1
+        cblk = int(cols/16)
+        
+        profile_oyc = blksmooth2d(profile_oyc,okprof_oyc,rblk,cblk,blklim=0.25,mode='mean')              
+        for c in range(cols):
+            psf_orc[:,c] = shift(profile_oyc[:,c],drow_oc[c],cval=0,order=1)
+            isbkgcont_orc[:,c] = shift(isbkgcont_oyc[:,c].astype(int),drow_oc[c],cval=0,order=1) > 0.1
+            badbinnew_orc[:,c] = shift(badbinnew_oyc[:,c].astype(int),drow_oc[c],cval=1,order=1) > 0.1
 
-        maprow_od = np.vstack((edgerow_od[:,0],targetrow_od[:,0],targetrow_od[:,1],edgerow_od[:,1])).T
+        targetrow_od[0] = trow_o - np.argmax(isbkgcont_orc[trow_o::-1,cols/2] > 0)
+        targetrow_od[1] = trow_o + np.argmax(isbkgcont_orc[trow_o:,cols/2] > 0)
+
+        maprow_od = np.vstack((edgerow_od[0],targetrow_od[0],targetrow_od[1],edgerow_od[1])).T
         maprow_od += np.array([-2,-2,2,2])
 
+        plot_2d_profile(psf_orc,psf_orc.shape)
+        
         if debug:
-            pyfits.PrimaryHDU(psf_orc.astype('float32')).writeto(sciname+"_psf_orc.fits",clobber=True) 
+            pf.PrimaryHDU(psf_orc.astype('float32')).writeto(sciname+"_psf_orc.fits",clobber=True) 
             #pyfits.PrimaryHDU(skyflat_orc.astype('float32')).writeto(sciname+"_skyflat_orc.fits",clobber=True)
-            pyfits.PrimaryHDU(badbinnew_orc.astype('uint8')).writeto(sciname+"_badbinnew_orc.fits",clobber=True) 
-            pyfits.PrimaryHDU(isbkgcont_orc.astype('uint8')).writeto(sciname+"_isbkgcont_orc.fits",clobber=True)           
-        return psf_orc,skyflat_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc
+            pf.PrimaryHDU(badbinnew_orc.astype('uint8')).writeto(sciname+"_badbinnew_orc.fits",clobber=True) 
+            pf.PrimaryHDU(isbkgcont_orc.astype('uint8')).writeto(sciname+"_isbkgcont_orc.fits",clobber=True)           
+        return psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc
                         
-
+    #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
 
 if __name__ == "__main__":
 
@@ -664,4 +693,4 @@ if __name__ == "__main__":
 
     image = sys.argv[1]
     hdu = pf.open(image)
-    specpolsignalmap(hdu,logfile="log.file",debug=False)
+    psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc=specpolsignalmap(hdu,logfile="log.file",debug=False)

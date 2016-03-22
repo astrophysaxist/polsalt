@@ -42,6 +42,8 @@ def blksmooth2d(ar_rc,ok_rc,rblk,cblk,blklim,mode="mean",debug=False):
 
     rows,cols = ar_rc.shape
     arr_rc = np.zeros_like(ar_rc)
+    #Mask nans
+    ok_rc &= ~np.isnan(ar_rc)
     arr_rc[ok_rc] = ar_rc[ok_rc]
     r_rc,c_rc = np.indices((rows,cols)).astype(float)
     rblks,cblks = int(rows/rblk),int(cols/cblk)
@@ -103,15 +105,15 @@ def blksmooth2d(ar_rc,ok_rc,rblk,cblk,blklim,mode="mean",debug=False):
         
     arr_rc = griddata((r_RC[ok_RC],c_RC[ok_RC]),arr_RC[ok_RC],  \
         tuple(np.mgrid[:rfac*rows:rfac,:cfac*cols:cfac].astype(float)),method='cubic',fill_value=0.)
-
+    
     if debug:
         pyfits.PrimaryHDU(arr_rc.astype('float32')).writeto('arr_rc_0.fits',clobber=True)
 
 # extrapolate to original array size
     argR_r = ((np.arange(rows) - r0)/rblk).clip(0,rblks-1).astype(int)
     argC_c = ((np.arange(cols) - c0)/cblk).clip(0,cblks-1).astype(int)
-    r0,r1 = np.where(arr_rc.sum(axis=1)>0)[0][[0,-1]]
-    c0,c1 = np.where(arr_rc.sum(axis=0)>0)[0][[0,-1]]
+    r0,r1 = np.where(np.nansum(arr_rc,axis=1)>0)[0][[0,-1]]
+    c0,c1 = np.where(np.nansum(arr_rc,axis=0)>0)[0][[0,-1]]
 
     arr_rc[r0-rblk/2:r0,c0:c1+1]   += arr_rc[r0,c0:c1+1]   +        \
                     dadr_RC[argR[0],argC_c[c0:c1+1]]*(np.arange(-int(rblk/2),0)[:,None])
