@@ -645,35 +645,42 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         #compute stellar psf in original geometry for extraction
         # use profile normed to (unsmoothed) stellar spectrum, new badpixmap, removing background continuum 
-                     
+
+        #Set good pixels to True denoting background continuum?
         isbkgcont_oyc = ~(badbinnew_oyc)
+
+        #Initialize new arrays
         targetrow_od = np.zeros((2))   
         badbinnew_orc = np.zeros_like(badbin_orc)
         isbkgcont_orc = np.zeros_like(badbin_orc)
         psf_orc = np.zeros_like(profile_orc)
-        
-        isedge_oyc = (np.arange(rows)[:,None] < edgerow_od[None,None,0]) | \
-            (np.indices((rows,cols))[0] > edgerow_od[None,None,1])
-        isskycont_oyc = (((np.arange(rows)[:,None] < edgerow_od[None,None,0]+rows/16) |  \
-            (np.indices((rows,cols))[0] > edgerow_od[None,None,1]-rows/16)) & ~isedge_oyc)
 
         #Define parameters of 2D smoothing
         rblk = 1
         cblk = int(cols/16)
-        
-        profile_oyc = blksmooth2d(profile_oyc,okprof_oyc,rblk,cblk,blklim=0.25,mode='mean')              
-        for c in range(cols):
-            psf_orc[:,c] = shift(profile_oyc[:,c],drow_oc[c],cval=0,order=1)
-            isbkgcont_orc[:,c] = shift(isbkgcont_oyc[:,c].astype(int),drow_oc[c],cval=0,order=1) > 0.1
-            badbinnew_orc[:,c] = shift(badbinnew_oyc[:,c].astype(int),drow_oc[c],cval=1,order=1) > 0.1
 
+        #Smooth profile using defined block binning
+        profile_oyc = blksmooth2d(profile_oyc,okprof_oyc,rblk,cblk,blklim=0.25,mode='mean')
+
+        bad_val = 0.1
+        for c in range(cols):
+            #Move 2d smoothed profile back to initial position and save as PSF
+            psf_orc[:,c] = shift(profile_oyc[:,c],drow_oc[c],cval=0,order=1)
+            #Shift masks as well, flagging as bad any pixels with interpolated values > bad_val
+            isbkgcont_orc[:,c] = shift(isbkgcont_oyc[:,c].astype(int),drow_oc[c],cval=0,order=1) > bad_val
+            badbinnew_orc[:,c] = shift(badbinnew_oyc[:,c].astype(int),drow_oc[c],cval=1,order=1) > bad_val
+
+        #Find limits of target row using the location of the nearest 'good' points
+        #at the central wavelength on either side of the target, starting with the target row
+        #N.B. If target row is valid/not marked bad these both will be the target row index
         targetrow_od[0] = trow_o - np.argmax(isbkgcont_orc[trow_o::-1,cols/2] > 0)
         targetrow_od[1] = trow_o + np.argmax(isbkgcont_orc[trow_o:,cols/2] > 0)
 
+        #Not sure what these guys will be used for...
         maprow_od = np.vstack((edgerow_od[0],targetrow_od[0],targetrow_od[1],edgerow_od[1])).T
         maprow_od += np.array([-2,-2,2,2])
-
-        plot_2d_profile(psf_orc,psf_orc.shape)
+        
+        #plot_2d_profile(psf_orc,psf_orc.shape)
         
         if debug:
             pf.PrimaryHDU(psf_orc.astype('float32')).writeto(sciname+"_psf_orc.fits",clobber=True) 
@@ -682,7 +689,6 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
             pf.PrimaryHDU(isbkgcont_orc.astype('uint8')).writeto(sciname+"_isbkgcont_orc.fits",clobber=True)           
         return psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc
                         
-    #~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
 
 if __name__ == "__main__":
 
