@@ -17,6 +17,8 @@ from iraf import pysalt
 from saltobslog import obslog
 from saltsafelog import logging
 
+from scrunch1d import scrunch1d
+
 # np.seterr(invalid='raise')
 np.set_printoptions(threshold=np.nan)
 debug = True
@@ -676,9 +678,15 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         targetrow_od[0] = trow_o - np.argmax(isbkgcont_orc[trow_o::-1,cols/2] > 0)
         targetrow_od[1] = trow_o + np.argmax(isbkgcont_orc[trow_o:,cols/2] > 0)
 
-        #Not sure what these guys will be used for...
+        #This array ends up setting row limits for the target
+        #This initializes the array with the extent of the rows and location of target in rowspace
         maprow_od = np.vstack((edgerow_od[0],targetrow_od[0],targetrow_od[1],edgerow_od[1])).T
-        maprow_od += np.array([-2,-2,2,2])
+
+        #This defines the buffer that will be used to extract the target
+        nrows = 3
+        nbuff = (nrows -1)/2 + 1
+        #This buffer is added to limits defined above
+        maprow_od += np.array([-nbuff,-nbuff,nbuff,nbuff])
         
         #plot_2d_profile(psf_orc,psf_orc.shape)
         
@@ -687,65 +695,94 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
             #pyfits.PrimaryHDU(skyflat_orc.astype('float32')).writeto(sciname+"_skyflat_orc.fits",clobber=True)
             pf.PrimaryHDU(badbinnew_orc.astype('uint8')).writeto(sciname+"_badbinnew_orc.fits",clobber=True) 
             pf.PrimaryHDU(isbkgcont_orc.astype('uint8')).writeto(sciname+"_isbkgcont_orc.fits",clobber=True)           
-        return psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc
+        return psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc,sciname,wav_orc
 
 
-def specpolextract():
+def specpolextract(obsname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc):
     """Extract and rebin spectra."""
-    maprow_ocd = maprow_od[:,None,:] + np.zeros((2,cols,4)) 
-    maprow_ocd[okwav_oc] += drow_oc[okwav_oc,None]      
-            
-    isedge_orc = (np.arange(rows)[:,None] < maprow_ocd[:,None,:,0]) | \
-                 (np.arange(rows)[:,None] > maprow_ocd[:,None,:,3])
-    istarget_orc = okwav_oc[:,None,:] & (np.arange(rows)[:,None] > maprow_ocd[:,None,:,1]) & \
-                   (np.arange(rows)[:,None] < maprow_ocd[:,None,:,2])
+
+    #Set up dimensions of image
+    rows,cols = wav_orc.shape
     
-    isbkgcont_orc &= (~badbinall_orc & ~isedge_orc & ~istarget_orc)
-    badbinall_orc |= badbinnew_orc
-    badbinone_orc |= badbinnew_orc
-    hdusum['BPM'].data = badbinnew_orc.astype('uint8')
+    #Create mask of all valid wavelengths
+    okwav_oc = ~((wav_orc == 0).all(axis=0))
+
+    
+    #Make a copy of the row parameters for each wavelength
+    maprow_ocd = maprow_od + np.zeros((cols,4))
+   
+    #Add the distance to the maximum to each row; this should now host row parameters
+    #with respect to position of the maximum
+    #Recall drow_oc is distance maxima (as function of columns/wavelength) are from maximum of central column/wavelength 
+    maprow_ocd[okwav_oc] += drow_oc[okwav_oc,None]      
+
+    #Use limits in maprow to define edge of 2D spectrum
+    isedge_orc = (np.arange(rows)[:,None] < maprow_ocd[None,:,0]) | \
+                 (np.arange(rows)[:,None] > maprow_ocd[None,:,3])
+
+    #Use limits in map row to define target spectrum to extract
+    istarget_orc = okwav_oc[None,:] & (np.arange(rows)[:,None] > maprow_ocd[None,:,1]) & \
+                   (np.arange(rows)[:,None] < maprow_ocd[None,:,2])
+    
+    isbkgcont_orc &= (~badbinnew_orc & ~isedge_orc & ~istarget_orc)
+    badbinall_orc = badbinnew_orc
+    badbinone_orc = badbinnew_orc
+    #hdusum['BPM'].data = badbinnew_orc.astype('uint8')
 
     if debug: 
         #                hdusum.writeto(obsname+".fits",clobber=True)
-        pyfits.PrimaryHDU(psf_orc.astype('float32')).writeto(obsname+'_psf_orc.fits',clobber=True) 
+        pf.PrimaryHDU(psf_orc.astype('float32')).writeto(obsname+'_psf_orc.fits',clobber=True) 
         #               pyfits.PrimaryHDU(badbinnew_orc.astype('uint8')).writeto('badbinnew_orc.fits',clobber=True)   
         #               pyfits.PrimaryHDU(badbinall_orc.astype('uint8')).writeto('badbinall_orc.fits',clobber=True)  
         #               pyfits.PrimaryHDU(badbinone_orc.astype('uint8')).writeto('badbinone_orc.fits',clobber=True)  
 
     # set up wavelength binning
-    wbin = wav_orc[0,rows/2,cols/2]-wav_orc[0,rows/2,cols/2-1] 
+    wbin = wav_orc[rows/2,cols/2]-wav_orc[rows/2,cols/2-1] 
     wbin = 2.**(np.rint(np.log2(wbin)))         # bin to nearest power of 2 angstroms
-    wmin = (wav_orc.max(axis=1)[okwav_oc].reshape((2,-1))).min(axis=1).max()
+    #Set up min and max wavelengths
+    wmin = wav_orc.max(axis=0)[okwav_oc].min()
     wmax = wav_orc.max()
-    for o in (0,1): 
-        colmax = np.where((wav_orc[o] > 0.).any(axis=0))[0][-1]
-        row_r = np.where(wav_orc[o,:,colmax] > 0.)[0]
-        wmax = min(wmax,wav_orc[o,row_r,colmax].min())
 
+    #Find index of last column with wavelength > 0
+    colmax = np.where((wav_orc > 0.).any(axis=0))[0][-1]
+    #Store row indicies of the last column 
+    row_r = np.where(wav_orc[:,colmax] > 0.)[0]
+    #Set maximum wavelength to shortest maximum wavelength in 2d spectrum
+    wmax = min(wmax,wav_orc[row_r,colmax].min())
+
+    #Define wavelength bin edges
     wedgemin = wbin*int(wmin/wbin+0.5) + wbin/2.
     wedgemax = wbin*int(wmax/wbin-0.5) + wbin/2.
     wedge_w = np.arange(wedgemin,wedgemax+wbin,wbin)
     wavs = wedge_w.shape[0] - 1
-    binedge_orw = np.zeros((2,rows,wavs+1))
-    specrow_or = (maprow_od[:,1:3].mean(axis=1)[:,None] + np.arange(-rows/4,rows/4)).astype(int)
+    print "number of wavelength bis is",wavs
 
+    #Initialize array to hold 2D bin edges
+    binedge_orw = np.zeros((rows,wavs+1))
+    #Define array of 2*row_incl row indices centered on target spectrum
+    row_incl = rows/4
+    specrow_or = (maprow_od[0,1:3].mean(axis=0) + np.arange(-row_incl,row_incl)).astype(int)
+    
     # scrunch and normalize psf from summed images (using badbinone) for optimized extraction
     # psf is normalized so its integral over row is 1.
     psfnormmin = 0.70    # wavelengths with less than this flux in good bins are marked bad
-    psf_orw = np.zeros((2,rows,wavs))
+    psf_orw = np.zeros((rows,wavs))
 
-    for o in (0,1):
-        for r in specrow_or[o]:
-            binedge_orw[o,r] = \
-                               interp1d(wav_orc[o,r,okwav_oc[o]],np.arange(cols)[okwav_oc[o]], \
-                                   kind='linear',bounds_error=False)(wedge_w)
-            psf_orw[o,r] = scrunch1d(psf_orc[o,r],binedge_orw[o,r])
+    for r in specrow_or:
+        binedge_orw[r] = \
+                           interp1d(wav_orc[r,okwav_oc],np.arange(cols)[okwav_oc], \
+                                    kind='linear',bounds_error=False)(wedge_w)
+        psf_orw[r] = scrunch1d(psf_orc[r],binedge_orw[r])
 
     if debug: 
-        pyfits.PrimaryHDU(binedge_orw.astype('float32')).writeto(obsname+'_binedge_orw.fits',clobber=True)
-        pyfits.PrimaryHDU(psf_orw.astype('float32')).writeto(obsname+'_psf_orw.fits',clobber=True)
+        pf.PrimaryHDU(binedge_orw.astype('float32')).writeto(obsname+'_binedge_orw.fits',clobber=True)
+        pf.PrimaryHDU(psf_orw.astype('float32')).writeto(obsname+'_psf_orw.fits',clobber=True)
 
-    psf_orw /= psf_orw.sum(axis=1)[:,None,:]
+    psf_orw /= psf_orw.sum(axis=0)[None,:]
+    plot_2d_profile(psf_orc,psf_orc.shape)
+
+    #~~~~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    sys.exit(1)
 
     # set up optional image-dependent column shift for slitless data
     colshiftfilename = "colshift.txt"
@@ -867,4 +904,5 @@ if __name__ == "__main__":
 
     image = sys.argv[1]
     hdu = pf.open(image)
-    psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc=specpolsignalmap(hdu,logfile="log.file",debug=False)
+    psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc,sciname,wav_orc=specpolsignalmap(hdu,logfile="log.file",debug=False)
+    specpolextract(sciname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc=isbkgcont_orc)
