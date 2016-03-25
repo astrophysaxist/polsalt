@@ -692,15 +692,19 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         
         if debug:
             pf.PrimaryHDU(psf_orc.astype('float32')).writeto(sciname+"_psf_orc.fits",clobber=True) 
-            #pyfits.PrimaryHDU(skyflat_orc.astype('float32')).writeto(sciname+"_skyflat_orc.fits",clobber=True)
+            #pf.PrimaryHDU(skyflat_orc.astype('float32')).writeto(sciname+"_skyflat_orc.fits",clobber=True)
             pf.PrimaryHDU(badbinnew_orc.astype('uint8')).writeto(sciname+"_badbinnew_orc.fits",clobber=True) 
             pf.PrimaryHDU(isbkgcont_orc.astype('uint8')).writeto(sciname+"_isbkgcont_orc.fits",clobber=True)           
         return psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc,sciname,wav_orc
 
 
-def specpolextract(obsname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc):
+def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc):
     """Extract and rebin spectra."""
 
+    #Setup output name
+    
+    outfile = image.split('.fits')[0]+'_specpolextract.fits'
+    
     #Set up dimensions of image
     rows,cols = wav_orc.shape
     
@@ -732,9 +736,9 @@ def specpolextract(obsname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont
     if debug: 
         #                hdusum.writeto(obsname+".fits",clobber=True)
         pf.PrimaryHDU(psf_orc.astype('float32')).writeto(obsname+'_psf_orc.fits',clobber=True) 
-        #               pyfits.PrimaryHDU(badbinnew_orc.astype('uint8')).writeto('badbinnew_orc.fits',clobber=True)   
-        #               pyfits.PrimaryHDU(badbinall_orc.astype('uint8')).writeto('badbinall_orc.fits',clobber=True)  
-        #               pyfits.PrimaryHDU(badbinone_orc.astype('uint8')).writeto('badbinone_orc.fits',clobber=True)  
+        #               pf.PrimaryHDU(badbinnew_orc.astype('uint8')).writeto('badbinnew_orc.fits',clobber=True)   
+        #               pf.PrimaryHDU(badbinall_orc.astype('uint8')).writeto('badbinall_orc.fits',clobber=True)  
+        #               pf.PrimaryHDU(badbinone_orc.astype('uint8')).writeto('badbinone_orc.fits',clobber=True)  
 
     # set up wavelength binning
     wbin = wav_orc[rows/2,cols/2]-wav_orc[rows/2,cols/2-1] 
@@ -778,119 +782,101 @@ def specpolextract(obsname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont
         pf.PrimaryHDU(binedge_orw.astype('float32')).writeto(obsname+'_binedge_orw.fits',clobber=True)
         pf.PrimaryHDU(psf_orw.astype('float32')).writeto(obsname+'_psf_orw.fits',clobber=True)
 
-    psf_orw /= psf_orw.sum(axis=0)[None,:]
-    plot_2d_profile(psf_orc,psf_orc.shape)
+   
+   # psf_orw /= psf_orw.sum(axis=0)#[None,:]
+   
+    #plot_2d_profile(psf_orw,psf_orw.shape)   
 
-    #~~~~~~~~~~~~~~~~~~~~VERIFIED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    sys.exit(1)
+    #Mask as zero the bad binned pixels
+    target_orc = hdu['SCI'].data
+    badbin_orc = (hdu['BPM'].data > 0)
+    badbinbkg_orc = (badbin_orc | badbinnew_orc | isedge_orc | istarget_orc)
+    target_orc *= (~badbin_orc).astype(int)
+    #Get rid of NaNs
+    target_orc[np.isnan(target_orc)] = 0.0
 
-    # set up optional image-dependent column shift for slitless data
-    colshiftfilename = "colshift.txt"
-    docolshift = os.path.isfile(colshiftfilename)
-    if docolshift:
-        img_I,dcol_I = np.loadtxt(colshiftfilename,dtype=float,unpack=True,usecols=(0,1))
-        shifts = img_I.shape[0]
-        log.message('Column shift: \n Images '+shifts*'%5i ' % tuple(img_I), with_header=False)                 
-        log.message(' Bins    '+shifts*'%5.2f ' % tuple(dcol_I), with_header=False)                 
-               
-    # background-subtract and extract spectra
-    for i in range(outfiles):
-        hdulist = pyfits.open(outfilelist[i])
-        tnum = os.path.basename(outfilelist[i]).split('.')[0][-3:]
-        badbin_orc = (hdulist['BPM'].data > 0)
-        badbinbkg_orc = (badbin_orc | badbinnew_orc | isedge_orc | istarget_orc)
+    if debug:
+        pf.PrimaryHDU(target_orc.astype('float32')).writeto('target_orc.fits',clobber=True)
 
-        if debug:
-            pyfits.PrimaryHDU(isedge_orc.astype('uint8')).writeto('isedge_orc_'+tnum+'.fits',clobber=True)
-            pyfits.PrimaryHDU(istarget_orc.astype('uint8')).writeto('istarget_orc_'+tnum+'.fits',clobber=True) 
-            pyfits.PrimaryHDU(badbinbkg_orc.astype('uint8')).writeto('badbinbkg_orc_'+tnum+'.fits',clobber=True)
+    var_orc = hdu['var'].data
+    badbin_orc |= badbinnew_orc
+    # extract spectrum optimally (Horne, PASP 1986)
+    target_orw = np.zeros((rows,wavs))   
+    var_orw = np.zeros_like(target_orw)
+    badbin_orw = np.ones((rows,wavs),dtype='bool')   
+    wt_orw = np.zeros_like(target_orw)
+    
 
-        target_orc = bkgsub(hdulist,badbinbkg_orc,isbkgcont_orc,skyflat_orc,maprow_ocd,tnum,debug=debug)
-        target_orc *= (~badbin_orc).astype(int)             
+    #for o in (0,1):
+    for r in specrow_or:
+        target_orw[r] = scrunch1d(target_orc[r],binedge_orw[r])
+        var_orw[r] = scrunch1d(var_orc[r],binedge_orw[r])
+        badbin_orw[r] = scrunch1d(badbin_orc[r].astype(float),binedge_orw[r]) > 0.001
 
-        if debug:
-            pyfits.PrimaryHDU(target_orc.astype('float32')).writeto('target_'+tnum+'_orc.fits',clobber=True)
+    
+    badbin_orw |= (var_orw == 0)
+    badbin_orw |= ((psf_orw*(~badbin_orw)).sum(axis=0)[None,:] < psfnormmin)
+    #                pf.PrimaryHDU(var_orw.astype('float32')).writeto('var_'+tnum+'_orw.fits',clobber=True)
+    #                pf.PrimaryHDU(badbin_orw.astype('uint8')).writeto('badbin_'+tnum+'_orw.fits',clobber=True)
+        
+    # use master psf shifted in row to allow for guide errors
+    pwidth = 2*int(1./psf_orw.max())
+    ok_w = ((psf_orw*badbin_orw).sum(axis=0) < 0.03/float(pwidth/2)).all(axis=0)
+    crosscor_s = np.zeros(pwidth)
 
-        var_orc = hdulist['var'].data
-        badbin_orc = (hdulist['bpm'].data > 0) | badbinnew_orc
-        # extract spectrum optimally (Horne, PASP 1986)
-        target_orw = np.zeros((2,rows,wavs))   
-        var_orw = np.zeros_like(target_orw)
-        badbin_orw = np.ones((2,rows,wavs),dtype='bool')   
-        wt_orw = np.zeros_like(target_orw)
-        dcol = 0.
+    for s in range(pwidth):
+        crosscor_s[s] = (psf_orw[s:s-pwidth]*target_orw[pwidth/2:-pwidth/2]*ok_w).sum()
 
-        if docolshift:
-            if int(tnum) in img_I:
-                dcol = dcol_I[np.where(img_I==int(tnum))]    # table has observed shift
+    smax = np.argmax(crosscor_s)
+    s_S = np.arange(smax-pwidth/4,smax-pwidth/4+pwidth/2+1)
+    
+    polycof = la.lstsq(np.vstack((s_S**2,s_S,np.ones_like(s_S))).T,crosscor_s[s_S])[0]
+    pshift = -(-0.5*polycof[1]/polycof[0] - pwidth/2) if (polycof[1] != 0.0 and polycof[0] != 0.0) else 0.0
+    
+    s = int(pshift+pwidth)-pwidth
+    sfrac = pshift-s
+    psfsh_orw = np.zeros_like(psf_orw)
+    outrow = np.arange(max(0,s+1),rows-(1+int(abs(pshift)))+max(0,s+1))
+    psfsh_orw[outrow] = (1.-sfrac)*psf_orw[outrow-s] + sfrac*psf_orw[outrow-s-1]
+    #                pf.PrimaryHDU(psfsh_orw.astype('float32')).writeto('psfsh_'+tnum+'_orw.fits',clobber=True)
+    
+    wt_orw[~badbin_orw] = psfsh_orw[~badbin_orw]/var_orw[~badbin_orw]
+    var_ow = (psfsh_orw*wt_orw*(~badbin_orw)).sum(axis=0)
+    badbin_ow = (var_ow == 0)
+    var_ow[~badbin_ow] = 1./var_ow[~badbin_ow]
+    #                pf.PrimaryHDU(var_ow.astype('float32')).writeto('var_'+tnum+'_ow.fits',clobber=True)
+    #                pf.PrimaryHDU(target_orw.astype('float32')).writeto('target_'+tnum+'_orw.fits',clobber=True)
+    #                pf.PrimaryHDU(wt_orw.astype('float32')).writeto('wt_'+tnum+'_orw.fits',clobber=True)
+    
+    sci_ow = (target_orw*wt_orw).sum(axis=0)*var_ow
+    
+    badlim = 0.20
+    psfbadfrac_ow = (psfsh_orw*badbin_orw.astype(int)).sum(axis=0)/psfsh_orw.sum(axis=0)
+    badbin_ow |= (psfbadfrac_ow > badlim)
+    
+    #cdebug = 83
+    #if debug: np.savetxt("xtrct"+str(cdebug)+"_"+tnum+".txt",np.vstack((psf_orw[:,:,cdebug],var_orw[:,:,cdebug], \
+    #        wt_orw[:,:,cdebug],target_orw[:,:,cdebug])).reshape((4,2,-1)).transpose(1,0,2).reshape((8,-1)).T,fmt="%12.5e")
 
-        for o in (0,1):
-            for r in specrow_or[o]:
-                target_orw[o,r] = scrunch1d(target_orc[o,r],binedge_orw[o,r]+dcol)
-                var_orw[o,r] = scrunch1d(var_orc[o,r],binedge_orw[o,r]+dcol)
-                badbin_orw[o,r] = scrunch1d(badbin_orc[o,r].astype(float),binedge_orw[o,r]+dcol) > 0.001 
-
-        badbin_orw |= (var_orw == 0)
-        badbin_orw |= ((psf_orw*(~badbin_orw)).sum(axis=1)[:,None,:] < psfnormmin)
-        #                pyfits.PrimaryHDU(var_orw.astype('float32')).writeto('var_'+tnum+'_orw.fits',clobber=True)
-        #                pyfits.PrimaryHDU(badbin_orw.astype('uint8')).writeto('badbin_'+tnum+'_orw.fits',clobber=True)
-  
-        # use master psf shifted in row to allow for guide errors
-        pwidth = 2*int(1./psf_orw.max())
-        ok_w = ((psf_orw*badbin_orw).sum(axis=1) < 0.03/float(pwidth/2)).all(axis=0)
-        crosscor_s = np.zeros(pwidth)
-
-        for s in range(pwidth):
-            crosscor_s[s] = (psf_orw[:,s:s-pwidth]*target_orw[:,pwidth/2:-pwidth/2]*ok_w).sum()
-
-        smax = np.argmax(crosscor_s)
-        s_S = np.arange(smax-pwidth/4,smax-pwidth/4+pwidth/2+1)
-        polycof = la.lstsq(np.vstack((s_S**2,s_S,np.ones_like(s_S))).T,crosscor_s[s_S])[0]
-        pshift = -(-0.5*polycof[1]/polycof[0] - pwidth/2)
-        s = int(pshift+pwidth)-pwidth
-        sfrac = pshift-s
-        psfsh_orw = np.zeros_like(psf_orw)
-        outrow = np.arange(max(0,s+1),rows-(1+int(abs(pshift)))+max(0,s+1))
-        psfsh_orw[:,outrow] = (1.-sfrac)*psf_orw[:,outrow-s] + sfrac*psf_orw[:,outrow-s-1]
-        #                pyfits.PrimaryHDU(psfsh_orw.astype('float32')).writeto('psfsh_'+tnum+'_orw.fits',clobber=True)
-
-        wt_orw[~badbin_orw] = psfsh_orw[~badbin_orw]/var_orw[~badbin_orw]
-        var_ow = (psfsh_orw*wt_orw*(~badbin_orw)).sum(axis=1)
-        badbin_ow = (var_ow == 0)
-        var_ow[~badbin_ow] = 1./var_ow[~badbin_ow]
-        #                pyfits.PrimaryHDU(var_ow.astype('float32')).writeto('var_'+tnum+'_ow.fits',clobber=True)
-        #                pyfits.PrimaryHDU(target_orw.astype('float32')).writeto('target_'+tnum+'_orw.fits',clobber=True)
-        #                pyfits.PrimaryHDU(wt_orw.astype('float32')).writeto('wt_'+tnum+'_orw.fits',clobber=True)
-
-        sci_ow = (target_orw*wt_orw).sum(axis=1)*var_ow
-
-        badlim = 0.20
-        psfbadfrac_ow = (psfsh_orw*badbin_orw.astype(int)).sum(axis=1)/psfsh_orw.sum(axis=1)
-        badbin_ow |= (psfbadfrac_ow > badlim)
-
-        cdebug = 83
-        if debug: np.savetxt("xtrct"+str(cdebug)+"_"+tnum+".txt",np.vstack((psf_orw[:,:,cdebug],var_orw[:,:,cdebug], \
-            wt_orw[:,:,cdebug],target_orw[:,:,cdebug])).reshape((4,2,-1)).transpose(1,0,2).reshape((8,-1)).T,fmt="%12.5e")
-
-        # write O,E spectrum, prefix "s". VAR, BPM for each spectrum. y dim is virtual (length 1)
-        # for consistency with other modes
-        hduout = pyfits.PrimaryHDU(header=hdulist[0].header)    
-        hduout = pyfits.HDUList(hduout)
-        header=hdulist['SCI'].header.copy()
-        header.update('VAREXT',2)
-        header.update('BPMEXT',3)
-        header.update('CRVAL1',wedge_w[0]+wbin/2.)
-        header.update('CRVAL2',0)
-        header.update('CDELT1',wbin)
-        header.update('CTYPE1','Angstroms')
-            
-        hduout.append(pyfits.ImageHDU(data=sci_ow.reshape((2,1,wavs)), header=header, name='SCI'))
-        header.update('SCIEXT',1,'Extension for Science Frame',before='VAREXT')
-        hduout.append(pyfits.ImageHDU(data=var_ow.reshape((2,1,wavs)), header=header, name='VAR'))
-        hduout.append(pyfits.ImageHDU(data=badbin_ow.astype("uint8").reshape((2,1,wavs)), header=header, name='BPM'))            
-            
-        hduout.writeto('e'+outfilelist[i],clobber=True,output_verify='warn')
-        log.message('Output file '+'e'+outfilelist[i] , with_header=False)
+    # write O,E spectrum, prefix "s". VAR, BPM for each spectrum. y dim is virtual (length 1)
+    # for consistency with other modes
+    hduout = pf.PrimaryHDU(header=hdu[0].header)    
+    hduout = pf.HDUList(hduout)
+    header=hdu['SCI'].header.copy()
+    header.update('VAREXT',2)
+    header.update('BPMEXT',3)
+    header.update('CRVAL1',wedge_w[0]+wbin/2.)
+    header.update('CRVAL2',0)
+    header.update('CDELT1',wbin)
+    header.update('CTYPE1','Angstroms')
+    
+    hduout.append(pf.ImageHDU(data=sci_ow.reshape((1,wavs)), header=header, name='SCI'))
+    header.update('SCIEXT',1,'Extension for Science Frame',before='VAREXT')
+    hduout.append(pf.ImageHDU(data=var_ow.reshape((1,wavs)), header=header, name='VAR'))
+    hduout.append(pf.ImageHDU(data=badbin_ow.astype("uint8").reshape((1,wavs)), header=header, name='BPM'))            
+    
+    hduout.writeto('e'+outfile,clobber=True,output_verify='warn')
+    #log.message('Output file '+'e'+outfile, with_header=False)
 
     return
 
@@ -905,4 +891,4 @@ if __name__ == "__main__":
     image = sys.argv[1]
     hdu = pf.open(image)
     psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc,sciname,wav_orc=specpolsignalmap(hdu,logfile="log.file",debug=False)
-    specpolextract(sciname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc=isbkgcont_orc)
+    specpolextract(image,hdu,sciname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc=isbkgcont_orc)
