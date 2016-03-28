@@ -784,6 +784,7 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
         pf.PrimaryHDU(psf_orw.astype('float32')).writeto(obsname+'_psf_orw.fits',clobber=True)
 
     #Normalize PSF by row
+    #Hmmm should we normalize by only the good pixels?
     psf_orw /= psf_orw.sum(axis=0)#[None,:]
        
     #plot_2d_profile(psf_orw,psf_orw.shape)   
@@ -822,7 +823,7 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     #??? Why would variance be zero after scrunching?
     badbin_orw |= (var_orw == 0)
     #Add rows with less than psfnormin flux to bad pixel mask
-    badbin_orw |= ((psf_orw*(~badbin_orw).astype(int)).sum(axis=0)[None,:] < psfnormmin)
+    badbin_orw |= ((psf_orw*(~badbin_orw)).sum(axis=0)[None,:] < psfnormmin)
     #NOTE: I get normalization > 1 and at 0 after using this mask for some rows.
 
     
@@ -841,14 +842,18 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     #pshift = -(-0.5*polycof[1]/polycof[0] - pwidth/2) if (polycof[1] != 0.0 and polycof[0] != 0.0) else 0.0
     
     #s = int(pshift+pwidth)-pwidth
+    #Ignore shifting the PSF for extraction...for now
     pshift = 0
     s = 0
     sfrac = pshift-s
     psfsh_orw = np.zeros_like(psf_orw)
     outrow = np.arange(max(0,s+1),rows-(1+int(abs(pshift)))+max(0,s+1))
     psfsh_orw[outrow] = (1.-sfrac)*psf_orw[outrow-s] + sfrac*psf_orw[outrow-s-1]
-       
+
+    #Define weights as inverse variance a la Horne
     wt_orw[~badbin_orw] = psfsh_orw[~badbin_orw]/var_orw[~badbin_orw]
+
+    #Estimate variance in extracted spectrum
     var_ow = (psfsh_orw*wt_orw*(~badbin_orw)).sum(axis=0)
     badbin_ow = (var_ow == 0)
     var_ow[~badbin_ow] = 1./var_ow[~badbin_ow]
