@@ -7,6 +7,8 @@ from scipy.ndimage.interpolation import shift
 from scipy.ndimage import convolve1d
 from scipy import linalg as la
 import pylab as P
+from numpy.polynomial.polynomial import polyfit
+from numpy.polynomial.polynomial import polyval
 
 #import reddir
 #datadir = os.path.dirname(inspect.getfile(reddir))+"/data/"
@@ -22,6 +24,82 @@ from scrunch1d import scrunch1d
 # np.seterr(invalid='raise')
 np.set_printoptions(threshold=np.nan)
 debug = True
+
+def spatial_prof_estimate(skysubimg):
+
+    """This function creates an estimate of the average spatial profile given a
+       sysubtracted image's 2d data array."""
+
+    #Get rid of nans
+    skysubimg[np.isnan(skysubimg)] = 0
+    
+    #Normalize by spatial direction
+    norm_prof = skysubimg[:,:]/np.nansum(skysubimg,axis=0)
+    
+    #Average by wavelength
+    spat_prof = np.nanmean(norm_prof,axis=1)
+
+
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    
+    ax.plot(np.arange(spat_prof.shape[0]),spat_prof, 'b-')
+    
+    ax.set_xlabel('Rows')
+    ax.set_ylabel('Profile')
+    P.tight_layout()
+    P.show()
+
+    return spat_prof
+
+def weighted_poly_fit(skysub_img_row, variance_row, flambda, deg=3, sqr_clip=25):
+
+    """This function computes a weighted polynomial fit to the
+       sky-subtracted and target weighted spectrum."""
+
+    outliers = np.zeros(skysub_img_row.shape[0]).astype('bool')
+    new_outliers = np.ones(skysub_img_row.shape[0]).astype('bool')
+    count = 0
+    loop = 0
+    g = 1.6 #rouhh estimate of sensitivity e-/dn
+    plot_fit = False
+
+    while True:
+
+               
+        #Fit the row with a weighted polynomial
+        coef, stats_list = polyfit(np.arange(skysub_img_row[~outliers].shape[0]),skysub_img_row[~outliers],w=(g*flambda[~outliers])**2/variance_row[~outliers], deg=deg, full=True)
+        
+        #Evaluate fit
+        fit = polyval(np.arange(skysub_img_row.shape[0]),coef)
+
+        #Outliers are beyond threshold set
+        deviation = ((skysub_img_row - fit)**2)*((g*flambda)**2/variance_row)
+        new_outliers = deviation > sqr_clip*((g*flambda)**2/variance_row)
+              
+        #Count if we've gotten same outliers twice
+        if set(outliers) == set(new_outliers):
+            count += 1
+
+        #If we get same outliers twice stop!
+        if count == 2:
+            break
+        
+        #Add the new outliers
+        outliers |= new_outliers
+
+        loop += 1
+        #print "Loop number is %d, Number of outliers is %d"%(loop,np.sum(outliers))
+
+    #Set any negative values to zero
+    fit[fit<0.0] = 0.0
+
+    if plot_fit:
+           plot_max_trace_comparison(np.arange(skysub_img_row.shape[0]),skysub_img_row , fit, mask=outliers)
+    
+    return fit
+    
+
 
 def plot_image(img, bpm, img_shape):
     """This function plots an image in greyscale"""
@@ -80,6 +158,9 @@ def plot_aperture_window(img, apmask, img_shape):
     #Generate a matrix to hold image values
     image = np.zeros([img_shape[0],img_shape[1]])
 
+    #Fix nans
+    image[np.isnan(image)] = 0
+
     #Fill in image values with flux values at fit (i.e. good) pixels
     image[apmask] += img[apmask]
     
@@ -89,7 +170,7 @@ def plot_aperture_window(img, apmask, img_shape):
     print "vmin is", vmin
     P.gray()
     
-    im = ax.imshow(image,vmin=-226,vmax=261,extent=(0,1581,0,1026))
+    im = ax.imshow(image,vmin=-1e-3,vmax=1e-2,extent=(0,1581,0,1026))
     P.tight_layout()
     P.show()
 
@@ -106,7 +187,7 @@ def plot_maximum_wave(cols, maxrows):
     P.tight_layout()
     P.show()
 
-def plot_max_trace_comparison(wave, maxval, estimate_maxval):
+def plot_max_trace_comparison(wave, maxval, estimate_maxval, mask=None):
     """This function plots up the input data for an interpolation
        of maximum as a function of wavelength and compares that to
        the input values that were used in the interpolation"""
@@ -115,12 +196,17 @@ def plot_max_trace_comparison(wave, maxval, estimate_maxval):
     ax = fig.add_subplot(111)
     #print "maxval is", maxval
     #sys.exit(1)
-    
-    ax.plot(wave,maxval, 'b+')
-    ax.plot(wave, estimate_maxval,'k-')
+
+    if mask == None:
+        ax.plot(wave,maxval, 'b+',label='Signal')
+    else:
+        ax.plot(wave[~mask],maxval[~mask], 'b+',label='Signal')
+        ax.plot(wave[mask],maxval[mask], 'r*',label='Masked Signal')
+        
+    ax.plot(wave, estimate_maxval,'k-',label='Estimate')
     ax.set_ylabel('Maximum Value')
     ax.set_xlabel('Wavelength')
-   
+    P.legend(loc=0)
     P.tight_layout()
     P.show()
 
@@ -150,6 +236,10 @@ def plot_max_fits(img, img_shape, mask):
     #Fill in image values with flux values at fit (i.e. good) pixels
     image[mask] += img[mask]
 
+    #Fix nans
+    image[np.isnan(image)] = 0
+    
+
     fig = P.figure()
     ax = fig.add_subplot(111)
     vmin = np.nanmin(image)
@@ -161,7 +251,7 @@ def plot_max_fits(img, img_shape, mask):
     print "vmax is",vmax
     P.gray()
     
-    im = ax.imshow(image,vmin=1e-1,vmax=1,extent=(0,1581,0,1026))
+    im = ax.imshow(image,vmin=vmin,vmax=vmax,extent=(0,1581,0,1026))
     P.tight_layout()
     P.show()
 
@@ -233,7 +323,8 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         profsmoothfac = 2.5                     # profile smoothed by slitwidth*profsmoothfac
         lam_c = wav_orc[rows/2,:] #Center of spatial direction; wavelength array
 
-        profile_orc = np.zeros_like(sci_orc)
+        #profile_orc = np.zeros_like(sci_orc)
+        profile_orc = np.zeros(sci_orc.shape)
         profilesm_orc = np.zeros_like(sci_orc)
         drow_oc = np.zeros((2,cols))
         maxrow_oc = np.zeros((cols),dtype=int)
@@ -270,6 +361,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #plot_maximum_row(summed_col=cross_or, rows=np.arange(rows),wav1=wav_orc[rows/2,wave_window[0]], wav2=wav_orc[rows/2,wave_window[1]],window=window,maxval=crossmaxval)
         
         #Find distance between maximum signal along slit and expected center
+        print "Found max in column summed data at row:", np.where(cross_or==crossmaxval)[0][0]
         drow = np.where(cross_or==crossmaxval)[0][0] - rows/2
 
         #Derive expected row numebrs for entire profile
@@ -289,18 +381,25 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         #Finds row index of maximum
         maxrow_oc[okwav_c] = np.argmax(sci_orc.T[isaper_cr].reshape((goodcols,-1)),axis=1)+ row_c[okwav_c] - aperture_wind[0]/rbin
-        #print "maxrow is",maxrow_oc[okwav_c]
+        #print "maxrow is",maxrow_oc[cols/2-0]
+
+        #print "1 row before",sci_orc[maxrow_oc[cols/2-0]-1,cols/2-0]
+        #print "0 row before",sci_orc[maxrow_oc[cols/2-0],cols/2-0]
+        #print "1 row after",sci_orc[maxrow_oc[cols/2-0]+1,cols/2-0]
+        #sys.exit(1)
         
         #Finds value at that index
         maxval_oc[okwav_c] = sci_orc[maxrow_oc[okwav_c],okwav_c]
         #sys.exit(1)
-        #plot_maximum_wave(wav_orc[maxrow_oc[okwav_c],okwav_c],maxrow_oc[okwav_c])
+        #plot_maximum_wave(wav_orc[maxrow_oc[okwav_c],okwav_c],maxval_oc[okwav_c])
+        #sys.exit(1)
         
         #Distance maximum in spatial direction is from maximum found using wavelength binned profile
-        drow1_c = maxrow_oc - (rows/2 + drow)
+        drow1_c = maxrow_oc - row_c
 
         #Spatial location of maximum at central wavelength
         trow_o = maxrow_oc[cols/2]
+        print "Trow_o (row where max is at central wavelength) is",trow_o
 
         # divide out spectrum (allowing for spectral curvature) to make spatial profile
 
@@ -309,8 +408,11 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         #Fit Distance that maximum in spatial direction is from maximum found using
         #wavelength binned profile with a 3rd order polynomial
-        order_trace = 3
+        order_trace = 1
         drow2_c = np.polyval(np.polyfit(np.where(okprof_c)[0],drow1_c[okprof_c],order_trace),(range(cols)))
+        #print "drow2_c is", drow2_c
+        plot_max_trace_comparison(wave=wav_orc[trow_o,okprof_c], maxval=drow1_c[okprof_c], estimate_maxval=drow2_c[okprof_c])
+        #sys.exit(1)
 
         #Flags points less than 3 rows different than the poly. fit as good
         err_pix = 3
@@ -326,8 +428,20 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         for r in range(rows):
             norm_rc[r] = maxval_fit_center_lambda(wav_orc[r])
             
+        #Find indices of the 'Rows' rows centered on target
         
-        #plot_max_trace_comparison(wave=np.arange(cols)[okprof_c], maxval=maxval_oc[okprof_c], estimate_maxval=norm_rc[trow_o+10,okprof_c])
+        samp_rows = (525 + np.arange(3)-(3-1)/2).astype(int)
+        print "samp_rows are:",samp_rows
+
+        #per_err = 1.10
+        #n_pix = 31
+        #for c in col:
+        #    samp_cols = (c + np.arange(n_pix)-(n_pix-1)/2).astype(int) if c > n_pix else 
+        #    median = 
+        #    okprof_c[c] = norm_rc[r] < median*per_err
+
+        #for k in samp_rows:
+        #    plot_max_trace_comparison(wave=np.arange(cols)[okprof_c], maxval=maxval_oc[okprof_c], estimate_maxval=norm_rc[k,okprof_c])
         #sys.exit(1)
 
         #Flag estimated points that are zero as not OK
@@ -339,6 +453,10 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         for r in range(rows):
             normsm_rc[r] = boxsmooth1d(norm_rc[r],okprof_rc[r],(8.*slitwidth*profsmoothfac)/cbin,0.5)
 
+        #for k in samp_rows:
+        #    plot_max_trace_comparison(wav_orc[525,okprof_c], maxval=maxval_oc[okprof_c], estimate_maxval=normsm_rc[k,okprof_c])
+        #sys.exit(1)
+        
         #Flag smooth points that are 0.0 as not OK
         okprofsm_rc = (normsm_rc != 0.)
         #print "wave indexed size is",wav_orc[okprofsm_rc].shape
@@ -350,8 +468,10 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
     
         #Normalize science frame by the maximum at each wavelength
         #Will result in 1 at the central maximum of 2D spectra, <1 everywhere else
+        #Important
         profile_orc[okprof_rc] = sci_orc[okprof_rc]/norm_rc[okprof_rc]
         #plot_max_fits(profile_orc, profile_orc.shape, mask=okprof_rc)
+        #plot_max_fits(norm_rc, norm_rc.shape, mask=okprof_rc)
         #sys.exit(1)
 
         #Normalize science frame by the smoothed maximum at each wavelength
@@ -365,8 +485,10 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         var_orc[okprof_rc] = var_orc[okprof_rc]/norm_rc[okprof_rc]**2 #Assumes this is electrons?
 
         #Distance maxima (as function of columns/wavelength) are from maximum of central column/wavelength 
-        drow_oc = (expectrow - expectrow[cols/2] + drow2_c -drow2_c[cols/2])
-
+        #drow_oc = (expectrow - expectrow[cols/2] + drow2_c -drow2_c[cols/2])
+        drow_oc = row_c + drow2_c - row_c[cols/2] - drow2_c[cols/2]
+        #drow_oc = maxrow_oc - maxrow_oc[cols/2]
+        
         # take out profile spatial curvature and tilt (r -> y)
        
 
@@ -374,13 +496,14 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         bad_val = 0.1
         
         #Aligns maxima to the same row as the central column/wavelength maximum
+        
         for c in range(cols):
-            profile_oyc[:,c] = shift(profile_orc[:,c],-drow_oc[c],order=1)
-            profilesm_oyc[:,c] = shift(profilesm_orc[:,c],-drow_oc[c],order=1)
+            profile_oyc[:,c] = shift(profile_orc[:,c],-drow_oc[c],order=0)
+            profilesm_oyc[:,c] = shift(profilesm_orc[:,c],-drow_oc[c],order=0)
             #Flag all new shifted (spline interpolated) bad pixels with values greater than bad_val as bad
-            badbin_oyc[:,c] = shift(badbin_orc[:,c].astype(int),-drow_oc[c],cval=1,order=1) > bad_val
-            var_oyc[:,c] = shift(var_orc[:,c],-drow_oc[c],order=1)
-            wav_oyc[:,c] = shift(wav_orc[:,c],-drow_oc[c],order=1)
+            badbin_oyc[:,c] = shift(badbin_orc[:,c].astype(int),-drow_oc[c],cval=1,order=0) > bad_val
+            var_oyc[:,c] = shift(var_orc[:,c],-drow_oc[c],order=0)
+            wav_oyc[:,c] = shift(wav_orc[:,c],-drow_oc[c],order=0)
 
         #Create new masks that eliminate updated bad pixel mask after shifting
         okprof_oyc = ~badbin_oyc & okprof_rc
@@ -395,6 +518,37 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #Compute median over sample of columns (wavelengths) to form profile as function of row (spatial direction)
         #Note axis =-1 selects the last axis dim in array
         profile_oy = np.median(profilesm_oyc,axis=-1)
+
+
+        #Try forming polynomial image
+        sci_orc[np.isnan(sci_orc)] = 0.0
+        var_orc[np.isnan(var_orc)] = 0.0
+        flambda = np.nansum(sci_orc,axis=0)
+        flambda[np.isnan(flambda)] = 0.0
+        poly_prof = np.zeros(sci_orc.shape)
+
+        target_window = (trow_o + np.arange(20)-(20+1)/2).astype(int)
+        flambda = np.nansum(sci_orc[target_window,:],axis=0)
+        flambda[np.isnan(flambda)] = 0.0
+        
+        
+        mask = var_orc == 0
+
+        #Make polynomial profile
+        for r in range(rows):
+            mask = var_orc[r,:] == 0
+            poly_prof[r,~mask] = weighted_poly_fit(sci_orc[r,~mask]/flambda[~mask], var_orc[r,~mask], flambda=flambda[~mask],deg=4, sqr_clip=0.5)
+
+        #Normalize by wavelength
+        profile_oyc = poly_prof/np.sum(poly_prof,axis=0)
+        
+
+        #/!\ Try just using a 1D profile for all wavelengths
+        #spat_prof  = spatial_prof_estimate(skysubimg=sci_orc)
+        
+        #for c in range(cols):
+            #profile_oyc[:,c] = spat_prof
+            
         
         # Take FOV from wavmap
         edgerow_od = np.zeros((2))
@@ -441,6 +595,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         # Stray light search by looking for seeing-sized features in spatial and spectral profile                   
 
         #Select the central window (profile_wind[1] - profile_wind[0]) of odd number so there's a center
+        #at the target row
         profile_wind = (16,17)
         profile_Y = profile_oy[trow_o-profile_wind[0]:trow_o+profile_wind[1]] 
 
@@ -492,7 +647,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         #Find indices of the 'Rows' rows centered on target
         row_oY = (trow_o + np.arange(Rows)-(Rows+1)/2).astype(int)
-
+        
         #Select these rows to form the following 2D arrays
         ghost_Yc = ghost_oyc[row_oY,:]
         isbadghost_Yc = isbadghost_oyc[row_oY,:]
@@ -578,9 +733,9 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #Why this row?
         avoid = int(np.around(fwhm/2)) +5
         print "Avoid is", avoid
-        #plot_profile(np.arange(Rows), profile_Y, mask=okprof_Y)
-
+        
         #Mask off the first and last avoid pixels in addition to the central 2*avoid pixels around target
+
         okprof_Y[range(avoid) + range(Rows/2-avoid,Rows/2+avoid) + range(Rows-avoid,Rows)] = False
         #print "Sum of okprof is",okprof_Y.sum()
         #plot_profile(np.arange(Rows), profile_Y, mask=okprof_Y)
@@ -648,7 +803,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #compute stellar psf in original geometry for extraction
         # use profile normed to (unsmoothed) stellar spectrum, new badpixmap, removing background continuum 
 
-        #Set good pixels to True denoting background continuum?
+        #Set good pixels to True denoting background continuum? Yep but only relevant to bright stars
         isbkgcont_oyc = ~(badbinnew_oyc)
 
         #Initialize new arrays
@@ -659,11 +814,24 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
 
         #Define parameters of 2D smoothing
         rblk = 1
-        cblk = int(cols/16)
+        cblk = int(cols/16) #Perhaps to 1 to only have 1 block.
+        target_window = (trow_o + np.arange(3)-(3+1)/2).astype(int)
+        #okprof_oyc[:,:] = False
+        #okprof_oyc[target_window,:] = True
 
+        #plot_profile(wav_orc[rows/2,:],np.mean(profile_oyc[target_window,:],axis=0), mask=None)
+        #sys.exit(1)
+        
+
+        #plot_aperture_window(img=profile_oyc, apmask=okprof_oyc, img_shape=profile_oyc.shape)
+        #sys.exit(1)
         #Smooth profile using defined block binning
-        profile_oyc = blksmooth2d(profile_oyc,okprof_oyc,rblk,cblk,blklim=0.25,mode='mean')
-
+        #Check profile before smoothing for dips/masking
+        #/!\
+        #profile_oyc = blksmooth2d(profile_oyc,okprof_oyc,rblk,cblk,blklim=0.25,mode='median')
+        #plot_aperture_window(img=profile_oyc, apmask=okprof_oyc, img_shape=profile_oyc.shape)
+        #sys.exit(1)
+        
         bad_val = 0.1
         for c in range(cols):
             #Move 2d smoothed profile back to initial position and save as PSF
@@ -689,6 +857,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         maprow_od += np.array([-nbuff,-nbuff,nbuff,nbuff])
         
         #plot_2d_profile(psf_orc,psf_orc.shape)
+        #sys.exit(1)
         
         if debug:
             pf.PrimaryHDU(psf_orc.astype('float32')).writeto(sciname+"_psf_orc.fits",clobber=True) 
@@ -698,7 +867,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         return psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc,sciname,wav_orc
 
 
-def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc):
+def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc, debug=True):
     """Extract and rebin spectra."""
 
     #Setup output name
@@ -784,10 +953,10 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
         pf.PrimaryHDU(psf_orw.astype('float32')).writeto(obsname+'_psf_orw.fits',clobber=True)
 
     #Normalize PSF by row
-    #Hmmm should we normalize by only the good pixels?
+    #Hmmm should we normalize by only the good pixels? Want profile accurate, masking might affect that
     psf_orw /= psf_orw.sum(axis=0)#[None,:]
        
-    #plot_2d_profile(psf_orw,psf_orw.shape)   
+    
 
     #Mask as zero the bad binned pixels
     target_orc = hdu['SCI'].data
@@ -820,7 +989,7 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
         badbin_orw[r] = scrunch1d(badbin_orc[r].astype(float),binedge_orw[r]) > bad_val
 
     #Add bins with variance at zero to bad pixel mask
-    #??? Why would variance be zero after scrunching?
+    #??? Why would variance be zero after scrunching? Take care of unmasked pixels
     badbin_orw |= (var_orw == 0)
     #Add rows with less than psfnormin flux to bad pixel mask
     badbin_orw |= ((psf_orw*(~badbin_orw)).sum(axis=0)[None,:] < psfnormmin)
@@ -828,23 +997,33 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
 
     
     # use master psf shifted in row to allow for guide errors
-    #pwidth = 2*int(1./psf_orw.max())
-    #ok_w = ((psf_orw*badbin_orw).sum(axis=0) < 0.03/float(pwidth/2)).all(axis=0)
-    #crosscor_s = np.zeros(pwidth)
-
-    #for s in range(pwidth):
-    #    crosscor_s[s] = (psf_orw[s:s-pwidth]*target_orw[pwidth/2:-pwidth/2]*ok_w).sum()
-
-    #smax = np.argmax(crosscor_s)
-    #s_S = np.arange(smax-pwidth/4,smax-pwidth/4+pwidth/2+1)
+    #Get rid of nans
+    psf_orw[np.isnan(psf_orw)] = 0
+    print "PSF nans", np.isnan(psf_orw).sum()
+    print "Target nans",np.isnan(target_orw).sum()
+    bother_with_pwidth = False
     
-    #polycof = la.lstsq(np.vstack((s_S**2,s_S,np.ones_like(s_S))).T,crosscor_s[s_S])[0]
-    #pshift = -(-0.5*polycof[1]/polycof[0] - pwidth/2) if (polycof[1] != 0.0 and polycof[0] != 0.0) else 0.0
+    if bother_with_pwidth:
+        pwidth = 2*int(1./np.nanmax(psf_orw))
+        print "pwidth is:", pwidth
+        ok_w = ((psf_orw*badbin_orw).sum(axis=0) < 0.03/float(pwidth/2)).all(axis=0)
+        crosscor_s = np.zeros(pwidth)
+
+        for s in range(pwidth):
+            crosscor_s[s] = (psf_orw[s:s-pwidth]*target_orw[pwidth/2:-pwidth/2]*ok_w).sum()
+
+        smax = np.argmax(crosscor_s)
+        s_S = np.arange(smax-pwidth/4,smax-pwidth/4+pwidth/2+1)
     
-    #s = int(pshift+pwidth)-pwidth
-    #Ignore shifting the PSF for extraction...for now
-    pshift = 0
-    s = 0
+        polycof = la.lstsq(np.vstack((s_S**2,s_S,np.ones_like(s_S))).T,crosscor_s[s_S])[0]
+        pshift = -(-0.5*polycof[1]/polycof[0] - pwidth/2) if (polycof[1] != 0.0 and polycof[0] != 0.0) else 0.0
+    
+        s = int(pshift+pwidth)-pwidth
+    else:
+        #Ignore shifting the PSF for extraction...for now
+        pshift = 0
+        s = 0
+        
     sfrac = pshift-s
     psfsh_orw = np.zeros_like(psf_orw)
     outrow = np.arange(max(0,s+1),rows-(1+int(abs(pshift)))+max(0,s+1))
