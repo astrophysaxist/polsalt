@@ -52,6 +52,32 @@ def spatial_prof_estimate(skysubimg):
 
     return spat_prof
 
+def plot_dumb_extraction(twod_spec, aperture, mask):
+    """This function plots the sum/mean/median of a 2D spectrum in the
+       given aperture, given some masking."""
+
+
+    #Mask 2D spectrum
+    spec = np.zeros(twod_spec.shape)
+    spec[~mask] = twod_spec[~mask]
+    spec[np.isnan(spec)] = 0.0
+
+    #Sum/Mean/Median in Apeture
+    spec[~aperture] = 0.0
+    oned_spec = np.sum(spec, axis=0)
+
+    #Plot
+    fig = P.figure()
+    ax = fig.add_subplot(111)
+    
+    ax.plot(np.arange(oned_spec.shape[0]),oned_spec, 'b-')
+    ax.set_ylabel('Signal')
+    ax.set_xlabel('Column / Wavelength')
+   
+    P.tight_layout()
+    P.show()
+    
+
 def weighted_poly_fit(skysub_img_row, variance_row, flambda, deg=3, sqr_clip=25):
 
     """This function computes a weighted polynomial fit to the
@@ -159,18 +185,19 @@ def plot_aperture_window(img, apmask, img_shape):
     image = np.zeros([img_shape[0],img_shape[1]])
 
     #Fix nans
-    image[np.isnan(image)] = 0
+    img[np.isnan(img)] = 0
 
     #Fill in image values with flux values at fit (i.e. good) pixels
     image[apmask] += img[apmask]
     
     fig = P.figure()
     ax = fig.add_subplot(111)
-    vmin=abs(image).min()
+    vmin=np.nanmin(image)
+    vmax = np.nanmax(image)
     print "vmin is", vmin
     P.gray()
     
-    im = ax.imshow(image,vmin=-1e-3,vmax=1e-2,extent=(0,1581,0,1026))
+    im = ax.imshow(image,vmin=vmin,vmax=vmax,extent=(0,1581,0,1026))
     P.tight_layout()
     P.show()
 
@@ -279,6 +306,7 @@ def plot_profile(rows, profile, mask=None):
         ax.plot(rows,profile, 'g-')
     else:
         ax.plot(rows[mask],profile[mask], 'g*',label='Valid Pixels')
+        ax.plot(rows[mask],profile[mask], 'g-',label='Valid Pixels')
         ax.plot(rows[~mask],profile[~mask], 'rx',label='Masked Pixels')
     ax.set_ylabel('Profile')
     ax.set_xlabel('Rows')
@@ -519,7 +547,10 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         #Note axis =-1 selects the last axis dim in array
         profile_oy = np.median(profilesm_oyc,axis=-1)
 
-
+        #Plot dumb extraction spectrum
+        #plot_dumb_extraction(sci_orc, isaper_cr.T, mask=~okprof_oyc)
+        #sys.exit(1)
+        
         #Try forming polynomial image
         sci_orc[np.isnan(sci_orc)] = 0.0
         var_orc[np.isnan(var_orc)] = 0.0
@@ -530,14 +561,11 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False):
         target_window = (trow_o + np.arange(20)-(20+1)/2).astype(int)
         flambda = np.nansum(sci_orc[target_window,:],axis=0)
         flambda[np.isnan(flambda)] = 0.0
-        
-        
-        mask = var_orc == 0
 
         #Make polynomial profile
         for r in range(rows):
             mask = var_orc[r,:] == 0
-            poly_prof[r,~mask] = weighted_poly_fit(sci_orc[r,~mask]/flambda[~mask], var_orc[r,~mask], flambda=flambda[~mask],deg=4, sqr_clip=0.5)
+            poly_prof[r,~mask] = weighted_poly_fit(sci_orc[r,~mask]/flambda[~mask], var_orc[r,~mask], flambda=flambda[~mask],deg=3, sqr_clip=0.5)
 
         #Normalize by wavelength
         profile_oyc = poly_prof/np.sum(poly_prof,axis=0)
@@ -959,7 +987,8 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     
 
     #Mask as zero the bad binned pixels
-    target_orc = hdu['SCI'].data
+    sky_orc = hdu['SKYSUB.IMG'].data
+    target_orc = hdu['skysub.opt'].data
     badbin_orc = (hdu['BPM'].data > 0)
     badbinbkg_orc = (badbin_orc | badbinnew_orc | isedge_orc | istarget_orc)
     target_orc *= (~badbin_orc).astype(int)
@@ -975,14 +1004,17 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     badbin_orc |= badbinnew_orc
 
     # extract spectrum optimally (Horne, PASP 1986)
-    target_orw = np.zeros((rows,wavs))   
+    target_orw = np.zeros((rows,wavs))
+    sky_orw = np.zeros((rows,wavs))   
     var_orw = np.zeros_like(target_orw)
     badbin_orw = np.ones((rows,wavs),dtype='bool')   
     wt_orw = np.zeros_like(target_orw)
-
+    update_var_orw = np.zeros((rows,wavs))
+    
     #Identically scrunch the target, variance, and bad bin data
     bad_val = 0.001
     for r in specrow_or:
+        sky_orw[r] = scrunch1d(sky_orc[r],binedge_orw[r])
         target_orw[r] = scrunch1d(target_orc[r],binedge_orw[r])
         var_orw[r] = scrunch1d(var_orc[r],binedge_orw[r])
         #Flag any pixels that have interpolated BPM values > bad_val as bad
@@ -1027,6 +1059,12 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     sfrac = pshift-s
     psfsh_orw = np.zeros_like(psf_orw)
     outrow = np.arange(max(0,s+1),rows-(1+int(abs(pshift)))+max(0,s+1))
+    #print "outrow is", np.arange(1,rows)
+
+    #samp_rows = (525 + np.arange(20)-(20-1)/2).astype(int)
+    ##print "samp_rows are:",samp_rows
+    #outrow = samp_rows
+
     psfsh_orw[outrow] = (1.-sfrac)*psf_orw[outrow-s] + sfrac*psf_orw[outrow-s-1]
 
     #Define weights as inverse variance a la Horne
@@ -1036,8 +1074,71 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     var_ow = (psfsh_orw*wt_orw*(~badbin_orw)).sum(axis=0)
     badbin_ow = (var_ow == 0)
     var_ow[~badbin_ow] = 1./var_ow[~badbin_ow]
-    
+
+    #Estimate the spectrum
     sci_ow = (target_orw*wt_orw).sum(axis=0)*var_ow
+
+    #Iterate on optimal extraction
+    sigma = 25
+    rn = 2.1 #DN from 1st chip noise
+    outliers = badbin_orw == True
+    loop = 0
+    count = 0
+    pix_masked = 0
+    while False:
+        
+        #Update the variance
+        update_var_orw = rn**2 + sci_ow*psfsh_orw +sky_orw
+
+        #Mask pixels above a threshold
+        deviation = (target_orw - sci_ow*psfsh_orw)**2
+        new_outliers = deviation > sigma*update_var_orw
+        
+        #Re-calculate spectrum
+        mask = (~new_outliers).astype('int')
+        print "%d pixels not masked."%(np.sum(mask))
+        wt_orw = mask*psfsh_orw/update_var_orw
+        norm_ow = 1.0/(wt_orw*psfsh_orw).sum(axis=0)
+        sci_ow = (target_orw*wt_orw).sum(axis=0)*norm_ow
+        var_sci_ow = (mask*psfsh_orw).sum(axis=0)*norm_ow
+                    
+        #Count if we've gotten same outliers twice
+        if pix_masked  == np.sum(new_outliers.astype('int')):
+            count += 1
+
+        #If we get same outliers twice stop!
+        if count == 2:
+            break
+
+        print "Loop number is", loop
+        pix_masked = np.sum(new_outliers.astype('int'))
+        loop += 1
+        sig_to_noise = np.median(sci_ow/np.sqrt(var_sci_ow))
+        print "Median S/N is ", sig_to_noise
+
+    #Add the new outliers
+    #outliers |= new_outliers     
+        
+    #Plot spectrum
+    plot_profile(np.linspace(wmin,wmax,wavs), sci_ow)
+    
+    #Plot image to be extracted
+    plot_aperture_window(img=target_orw*wt_orw*var_ow, apmask=outrow, img_shape=target_orw.shape)
+    opt = target_orw*wt_orw**var_ow
+        
+    #Save image for optimal extraction
+    hduout1 = pf.PrimaryHDU(header=hdu[0].header)    
+    hduout1 = pf.HDUList(hduout1)
+    header1=hdu['SCI'].header.copy()
+    header1.update('CRVAL1',wedge_w[0]+wbin/2.)
+    header1.update('CRVAL2',0)
+    header1.update('CDELT1',wbin)
+    header1.update('CTYPE1','Angstroms')
+    
+    hduout1.append(pf.ImageHDU(data=opt, header=header1, name='OPT'))
+    #hduout.append(pf.ImageHDU(data=badbin_ow.astype("uint8"), header=header, name='BPM'))            
+    hduout1.writeto('opt_'+outfile,clobber=True,output_verify='warn')
+
     
     badlim = 0.20
     psfbadfrac_ow = (psfsh_orw*badbin_orw.astype(int)).sum(axis=0)/psfsh_orw.sum(axis=0)
