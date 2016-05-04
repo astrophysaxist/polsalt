@@ -608,7 +608,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False,missing_skyext=False, np
             var_prof_oyc = (var_oyc)/norm_yc**2
         else:
             #Normalize variance by a sample extracted spectrum
-            var_prof_orc = var_orc/flambda**2
+            var_prof_oyc = var_oyc/flambda**2
 
         #Get rid of NaNs
         var_prof_oyc[np.isnan(var_prof_oyc)] = 0.0
@@ -627,6 +627,9 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False,missing_skyext=False, np
         if not norm_max:
             for r in (range(rows) if not targeted else target_window):
                 mask = var_prof_oyc[r,:] == 0
+                #print "sci_oyc/flambda is",sci_oyc[r,:]/flambda[r] 
+                #print "masked is",sci_oyc[r,~mask]/flambda[~mask]
+                #sys.exit(1)
                 poly_prof[r,~mask] = weighted_poly_fit(sci_oyc[r,~mask]/flambda[~mask], var_prof_oyc[r,~mask],deg=2, sqr_clip=25**2,plot_fit=True,line=r)
         else:
             for r in (range(rows) if not targeted else target_window):
@@ -640,7 +643,7 @@ def specpolsignalmap(hdu,logfile="log.file",debug=False,missing_skyext=False, np
         pf.PrimaryHDU(profile_oyc.astype('float32')).writeto(sciname+"_profile_%s_oyc.fits"%('normmax' if norm_max else 'normspec'),clobber=True) 
 
         #plot_2d_profile(img=(poly_prof!=0).astype('int'), img_shape=poly_prof.shape)
-        sys.exit(1)
+        #sys.exit(1)
         
 
         #/!\ Try just using a 1D profile for all wavelengths
@@ -1091,10 +1094,11 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     g = 1.6 #e-/DN
     var_orc = hdu['var'].data/g**2
     
-    print "Sci raw at 513,790",sciraw_orc[525,790]
-    print "Sci  at 513,790",sci_orc[525,790]
-    print "var at 513,790 is",var_orc[525,790]
-    sys.exit(1)
+    print "Sci raw at 513,790",sciraw_orc[525,500]
+    print "Sci  at 513,790",sci_orc[525,500]
+    print "var at 513,790 is",var_orc[525,500]
+    print "Their shapes are ",sciraw_orc.shape,sci_orc.shape,var_orc.shape
+    #sys.exit(1)
 
     #Mask as zero the bad binned pixels
     badbin_orc = (hdu['BPM'].data > 0)
@@ -1216,11 +1220,13 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     #var_ow[~badbin_ow] = 1./var_ow[~badbin_ow]
 
     #Estimate variance in 2 steps
+    var_ow = np.zeros([wavs])
     var_denom_ow = (psfsh_orw*wt_orw*(~badbin_orw)).sum(axis=0) # Sum M*P^2/V
     badbin_ow = (var_denom_ow == 0)
-    var_ow = (psfsh_orw*(~badbin_orw)).sum(axis=0)/var_denom_ow # Sum M*P/ Sum M*P^2/V
+    var_ow[~badbin_ow] = (psfsh_orw*(~badbin_orw)).sum(axis=0)[~badbin_ow]/var_denom_ow[~badbin_ow] # Sum M*P/ Sum M*P^2/V
     
     print "Var nans",np.isnan(var_ow).sum()
+    print "Var denom nans",np.isnan(var_denom_ow).sum()
 
     #Define rectangle to extract
     #npix = 60
@@ -1231,8 +1237,9 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     #Estimate the optimum spectrum
     #sci_ow = (target_orw*wt_orw).sum(axis=0)*var_ow
     sci_ow = (target_orw*wt_orw*(~badbin_orw)).sum(axis=0)/var_denom_ow
+    print "Sciow nans",np.isnan(sci_ow).sum()
 
-    sig_to_noise = np.median(sci_ow/np.sqrt(var_ow))
+    sig_to_noise = np.nanmedian(sci_ow/np.sqrt(var_ow))
     print "Median S/N is ", sig_to_noise
     
     #Test weights
@@ -1245,19 +1252,19 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     #Estimate sum in rectangle
     apply_bpm = True
     sci_mask_orw = (target_orw*(wt_orw!=0).astype('int'))*(var_ow!=0).astype('int') if apply_bpm else target_orw
-    sci_sum_ow = np.sum(sci_mask_orw,axis=0)
-    sci_sum_rect_ow = np.sum(sci_mask_orw*samp_mask,axis=0)
+    sci_sum_ow = np.nansum(sci_mask_orw,axis=0)
+    sci_sum_rect_ow = np.nansum(sci_mask_orw*samp_mask,axis=0)
 
-    sig_to_noise = np.median(sci_sum_rect_ow/np.sqrt(np.sum(var_orw*samp_mask,axis=0)))
+    sig_to_noise = np.nanmedian(sci_sum_rect_ow/np.sqrt(np.sum(var_orw*samp_mask,axis=0)))
     print "Median S/N in rect is ", sig_to_noise
     
     #Estimate average
-    sci_avg_ow = np.mean(sci_mask_orw,axis=0)
-    sci_avg_rect_ow = np.mean(sci_mask_orw*samp_mask,axis=0)
+    sci_avg_ow = np.nanmean(sci_mask_orw,axis=0)
+    sci_avg_rect_ow = np.nanmean(sci_mask_orw*samp_mask,axis=0)
 
     #Estimate median
-    sci_med_ow = np.median(sci_mask_orw,axis=0)
-    sci_med_rect_ow = np.median(sci_mask_orw*samp_mask,axis=0)
+    sci_med_ow = np.nanmedian(sci_mask_orw,axis=0)
+    sci_med_rect_ow = np.nanmedian(sci_mask_orw*samp_mask,axis=0)
 
     #Save image for optimal extraction
     hduout0 = pf.PrimaryHDU(header=hdu[0].header)    
@@ -1275,10 +1282,10 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     hduout1 = pf.PrimaryHDU(header=hdu[0].header)    
     hduout1 = pf.HDUList(hduout1)
     header1=hdu['SCI'].header.copy()
-    header1.update('CRVAL1',wedge_w[0]+wbin/2.)
-    header1.update('CRVAL2',0)
-    header1.update('CDELT1',wbin)
-    header1.update('CTYPE1','Angstroms')
+    header1['CRVAL1'] = wedge_w[0]+wbin/2.
+    header1['CRVAL2']= 0
+    header1['CDELT1'] = wbin
+    header1['CTYPE1'] = 'Angstroms'
         
     hduout1.append(pf.ImageHDU(data=sci_ow, header=header1, name='OPT'))
     hduout1.append(pf.ImageHDU(data=sci_sum_ow, header=header1, name='SUM'))
@@ -1290,11 +1297,11 @@ def specpolextract(image, hdu, obsname, wav_orc, maprow_od, drow_oc, badbinnew_o
     hduout2 = pf.PrimaryHDU(header=hdu[0].header)    
     hduout2 = pf.HDUList(hduout2)
     header2=hdu['SCI'].header.copy()
-    header2.update('CRVAL1',wedge_w[0]+wbin/2.)
-    header2.update('CRVAL2',0)
-    header2.update('CDELT1',wbin)
-    header2.update('CTYPE1','Angstroms')
-    header2.update('NPIX',npix)
+    header2['CRVAL1']= wedge_w[0]+wbin/2.
+    header2['CRVAL2']= 0
+    header2['CDELT1']= wbin
+    header2['CTYPE1']= 'Angstroms'
+    header2['NPIX']= npix
 
     hduout2.append(pf.ImageHDU(data=sci_sum_rect_ow, header=header2, name='SUMRECT'))
     hduout2.append(pf.ImageHDU(data=sci_avg_rect_ow, header=header2, name='AVGRECT'))
@@ -1424,5 +1431,5 @@ if __name__ == "__main__":
     missing_skyext = True if sys.argv[2] == '1' else False
     npix = np.int(sys.argv[3])
     hdu = pf.open(image)
-    psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc,sciname,wav_orc=specpolsignalmap(hdu,logfile="log.file",debug=False, missing_skyext=missing_skyext,npix=npix)
+    psf_orc,badbinnew_orc,isbkgcont_orc,maprow_od,drow_oc,sciname,wav_orc=specpolsignalmap(hdu,logfile="log.file",debug=False, missing_skyext=missing_skyext,npix=npix,norm_max=False)
     specpolextract(image,hdu,sciname, wav_orc, maprow_od, drow_oc, badbinnew_orc,isbkgcont_orc=isbkgcont_orc,missing_skyext=missing_skyext,psf_orc=psf_orc,npix=npix)
